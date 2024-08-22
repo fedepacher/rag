@@ -9,7 +9,7 @@ from api.app.schema.user_schema import User
 from api.app.service.auth_service import get_current_user
 
 
-router = APIRouter(prefix="/prompt")
+router = APIRouter()
 
 @router.post(
     "/",
@@ -22,3 +22,14 @@ def input_prompt(prompt: prompt_schema.Prompt=Body(...),
                  current_user: User =Depends(get_current_user)):
 
     return prompt_service.input_prompt(prompt)
+
+
+@router.get(
+"/receive-prompt",
+    tags=["prompt"],
+    status_code=status.HTTP_200_OK,
+    # response_model=,
+    # dependencies=[Depends(get_db)]
+)
+async def get_all_prompts():
+    return await prompt_service.get_prompts()

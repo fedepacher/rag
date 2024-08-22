@@ -1,12 +1,15 @@
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from typing import Optional
 
 
 class Prompt(BaseModel):
-    id: int
-    input: str = Field(..., max_length=500)
-    date: datetime = Field(default_factory=datetime.now)
-    output: str = Field(..., max_length=500)
+    id: Optional[str]  # Use `str` type instead of `ObjectId`
+    input: str
+    date: datetime
+    output: Optional[str]
 
     class Config:
-        from_attributes = True
+        orm_mode = True
+        allow_population_by_field_name = True
+        fields = {'id': '_id'}

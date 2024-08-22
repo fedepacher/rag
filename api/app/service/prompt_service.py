@@ -1,9 +1,11 @@
 import logging
 from fastapi import HTTPException, status
+from pymongo import ASCENDING
 
 from api.app.schema import prompt_schema
 from api.app.model.prompt_model import Prompt as PromptModel
 from api.app.utils.db_nosql import mongo_collection  # Import the MongoDB collection
+from api.app.utils.serialization import serialize_mongo_document
 
 
 def input_prompt(prompt: prompt_schema.Prompt):
@@ -29,3 +31,26 @@ def input_prompt(prompt: prompt_schema.Prompt):
     return {
         "message": "Prompt successfully saved in MongoDB"
     }
+
+
+async def get_prompts():
+    """Get all the prompts in the db that contains output NULL
+
+    Returns:
+        list: List of all the prompt without answer.
+    """
+    # Query for documents where output is None and sort by date
+    try:
+        document = mongo_collection.find_one({'output': None}, sort=[("date", ASCENDING)])
+        if document:
+            serialized_prompt = serialize_mongo_document(document)
+            return serialized_prompt
+        else:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                                detail="No document found with output=None")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail="An error occurred while retrieving prompts.")
+
+
+
