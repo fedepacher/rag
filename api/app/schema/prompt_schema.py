@@ -8,8 +8,8 @@ class Prompt(BaseModel):
     input: str
     date: datetime
     output: Optional[str]
+    context: Optional[str]
 
     class Config:
-        orm_mode = True
-        allow_population_by_field_name = True
-        fields = {'id': '_id'}
+        from_attributes = True
+        populate_by_name = True

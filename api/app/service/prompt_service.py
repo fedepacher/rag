@@ -18,7 +18,8 @@ def input_prompt(prompt: prompt_schema.Prompt):
         weather_schema.Weather: Entrance fields schema.
     """
     mongo_prompt = PromptModel(
-        input=prompt.input
+        input=prompt.input,
+        context=prompt.context
     )
 
     try:
@@ -51,6 +52,3 @@ async def get_prompts():
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="An error occurred while retrieving prompts.")
-
-
-
