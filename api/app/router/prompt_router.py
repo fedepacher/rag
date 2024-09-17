@@ -21,7 +21,7 @@ router = APIRouter()
 def input_prompt(prompt: prompt_schema.Prompt=Body(...),
                  current_user: User =Depends(get_current_user)):
 
-    return prompt_service.input_prompt(prompt)
+    return prompt_service.input_prompt(prompt, current_user)
 
 
 @router.get(

@@ -18,7 +18,12 @@ db.prompts.find({ output: null }).toArray()
 ### Ordered by date
 db.prompts.find({ output: null }).sort({ date: 1 }).toArray()
 
+### Update
 
+db.prompts.updateOne(
+    { _id: ObjectId('66c9569e7fb497bf29917165') },
+    { $set: { input: "En un transistor de efecto de campo de puerta aislada, el terminal de puerta maneja corriente?" } }
+)
 
 
 # api
@@ -49,3 +54,9 @@ MONGO_PASS=secret
 MONGO_PORT=27017
 MONGO_USER=mongoadmin
 PYTHONUNBUFFERED=1
+
+# Ollama server
+
+ollama serve
+
+ollama run mistral

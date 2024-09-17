@@ -2,24 +2,26 @@ import logging
 from fastapi import HTTPException, status
 from pymongo import ASCENDING
 
-from api.app.schema import prompt_schema
+from api.app.schema import prompt_schema, user_schema
 from api.app.model.prompt_model import Prompt as PromptModel
 from api.app.utils.db_nosql import mongo_collection  # Import the MongoDB collection
 from api.app.utils.serialization import serialize_mongo_document
 
 
-def input_prompt(prompt: prompt_schema.Prompt):
+def input_prompt(prompt: prompt_schema.Prompt, user: user_schema.User):
     """Create a new entrance in the database.
 
     Args:
         prompt (prompt_schema.Prompt): Entrance to add to the DB.
+        user (user_schema.Use): User registered.
 
     Returns:
         weather_schema.Weather: Entrance fields schema.
     """
     mongo_prompt = PromptModel(
         input=prompt.input,
-        context=prompt.context
+        context=prompt.context,
+        email=user.email
     )
 
     try:

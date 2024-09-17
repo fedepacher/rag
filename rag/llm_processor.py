@@ -38,9 +38,12 @@ class LLMProcessorOpenAI(BaseLLMProcessor):
         logging.debug(f"Processing {len(context)} chunks of text for question")
         vectorstore = Chroma.from_texts(texts=[context], embedding=self.embedding)
 
-        template = """Responda la pregunta basandose unicamente en el contexto del PDF. Si no encunetra la respuesta no alucine, responda que no sabe. 
-                      Pregunta: {question}
-                      Contexto: {context}
+        template = """Eres un asistente que debe responder preguntas basadas únicamente en la información proporcionada en el siguiente documento. No inventes respuestas ni utilices conocimientos externos. Si la respuesta no se encuentra en el documento, simplemente responde: "No sé la respuesta basada en la información proporcionada."
+
+                    [DOCUMENTO: {context}]
+                    
+                    Pregunta: {question}
+                    Respuesta:
                    """
         qa_chain_prompt = PromptTemplate.from_template(template)  # Run chain
         qachain = RetrievalQA.from_chain_type(
