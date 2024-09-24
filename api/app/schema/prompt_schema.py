@@ -9,6 +9,7 @@ class Prompt(BaseModel):
     date: datetime
     output: Optional[str]
     context: Optional[str]
+    status: Optional[str]
 
     class Config:
         from_attributes = True
