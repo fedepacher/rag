@@ -52,6 +52,45 @@ services:
 #        aliases:
 #          - api
 
+  email:
+    build: ./email
+    depends_on:
+      - database
+      - mongodb
+    environment:
+      DB_NAME: test_sql
+      DB_USER: rag-system
+      DB_PASS: rag-system
+      DB_HOST: database
+      DB_PORT: 3306
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
+      SECRET_KEY: 6b3d75e968f26f3be3443503efefd761e22d5e173fea95646a3659e673ebb97b
+      MONGO_HOST: mongodb
+      MONGO_DB_NAME: test_nosql
+      MONGO_PORT: 27017
+      MONGO_USER: mongoadmin
+      MONGO_PASS: secret
+      
+      SMTP_SERVER: "smtp.zoho.com"
+      SMTP_PORT: 465
+      SMTP_USERNAME: "tambo2022@zohomail.com"
+      SMTP_PASSWORD: ""
+
+      IMAP_SERVER: "imap.zoho.com"
+      IMAP_PORT: 993
+      IMAP_USERNAME: "tambo2022@zohomail.com"
+      IMAP_PASSWORD: ""
+
+    # para dev luego eliminar
+    volumes:
+      - /mnt/c/cmv-new/Python/pa_facu/fceia_chat/rag/email/app:/app  # Volumen agregado
+    networks:
+      rag_network:
+        aliases:
+          - email
+
+
+
 networks:
   rag_network:
     name: rag_network
