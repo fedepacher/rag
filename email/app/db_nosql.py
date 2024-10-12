@@ -1,5 +1,5 @@
 #desde api/app/ archivo de igual nombre (comento las lineas que cambio)
-import logging
+from logger_config import logger
 
 from pymongo import MongoClient
 
@@ -16,7 +16,7 @@ MONGO_PASS = settings.mongo_pass
 MONGO_DB_NAME = settings.mongo_db_name
 MONGO_PORT = settings.mongo_port
 
-logging.info(f"Connecting to local database {MONGO_HOST}")
+logger.info(f"Connecting to local database {MONGO_HOST}")
 client = MongoClient(f"mongodb://{MONGO_USER}:{MONGO_PASS}@{MONGO_HOST}:{MONGO_PORT}/")
 mongo_db = client[MONGO_DB_NAME]
 

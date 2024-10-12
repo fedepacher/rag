@@ -8,4 +8,5 @@ COPY ./app /app
 
 WORKDIR /app
 
-CMD ["python", "-c", "while True: pass"]
+#CMD ["python", "-c", "while True: pass"]
+CMD ["python", "email_main.py"]

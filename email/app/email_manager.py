@@ -10,12 +10,13 @@ from config import Config
 
 from datetime import datetime
 
+from logger_config import logger
 
 
 class EmailManager:
     def __init__(self):
         config = Config()
-        # Cargar configuración
+        logger.info("Loading EmailManager configuration")
         self.db_name = config.db_name
         self.db_user = config.db_user
         self.db_pass = config.db_pass  # Definir en 'config' o usar una variable por defecto
@@ -39,66 +40,30 @@ class EmailManager:
         self.imap_port = config.imap_port  # Definir en 'config' o usar una variable por defecto
         self.imap_username = config.imap_username  # Definir en 'config' o usar una variable por defecto
         self.imap_password = config.imap_password  # Definir en 'config' o usar una variable por defecto
-
+        
+        self.email_rest_sec = config.email_rest_sec
 
     def send_email(self, subject, body, to_address_list):
-        from_address = self.smtp_username
+        try:
+            logger.info(f"Sending email to {to_address_list}")
+            from_address = self.smtp_username
 
-        # mensaje MIME
-        msg = MIMEMultipart()
-        msg['From'] = from_address
-        msg['To'] = ", ".join(to_address_list)  # Unir la lista de destinatarios con comas
-        msg['Subject'] = subject
+            # mensaje MIME
+            msg = MIMEMultipart()
+            msg['From'] = from_address
+            msg['To'] = ", ".join(to_address_list)  # Unir la lista de destinatarios con comas
+            msg['Subject'] = subject
 
-        # cuerpo del mensaje, codificación UTF-8
-        msg.attach(MIMEText(body, 'plain', 'utf-8'))
+            # cuerpo del mensaje, codificación UTF-8
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
 
-        with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as smtp:
-            smtp.login(self.smtp_username, self.smtp_password)
-            smtp.sendmail(from_address, to_address_list, msg.as_string())
+            with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as smtp:
+                smtp.login(self.smtp_username, self.smtp_password)
+                smtp.sendmail(from_address, to_address_list, msg.as_string())
 
+        except Exception as e:
+            logger.error(f"Error sending email: {e}")
 
-    # def get_email(self):
-    #     # conexión IMAP
-    #     with imaplib.IMAP4_SSL(self.imap_server, self.imap_port) as mail:
-    #         try:
-    #             mail.login(self.imap_username, self.imap_password)
-    #             mail.select("inbox")
-    #             # Buscar correos
-    #             status, messages = mail.search(None, 'UNSEEN')
-    #             # Lista de ids
-    #             mail_ids = messages[0].split()
-
-    #             for mail_id in mail_ids:
-    #                 status, data = mail.fetch(mail_id, '(RFC822)')
-
-    #                 for response_part in data:
-    #                     if isinstance(response_part, tuple):
-    #                         msg = email.message_from_bytes(response_part[1])
-    #                         subject, encoding = decode_header(msg["Subject"])[0]
-
-    #                         # Decodificar el asunto si está en bytes
-    #                         if isinstance(subject, bytes):
-    #                             subject = subject.decode(encoding if encoding else "utf-8")
-
-    #                         # Obtener remitente
-    #                         from_ = msg.get("From")
-
-    #                         print(f"Correo de: {from_}")
-    #                         print(f"Asunto: {subject}")
-
-    #                         # Si el correo tiene varias partes
-    #                         if msg.is_multipart():
-    #                             for part in msg.walk():
-    #                                 if part.get_content_type() == "text/plain":
-    #                                     body = part.get_payload(decode=True).decode()
-    #                                     print(f"Cuerpo: {body}")
-    #                         else:
-    #                             body = msg.get_payload(decode=True).decode()
-    #                             print(f"Cuerpo: {body}")
-
-    #         except Exception as e:
-    #             print(f"Error al obtener correos: {e}")
 
     def get_unread_emails(self):
         """
@@ -111,8 +76,10 @@ class EmailManager:
         emails_info = []
 
         # Conexión IMAP
-        with imaplib.IMAP4_SSL(self.imap_server, self.imap_port) as mail:
-            try:
+        
+        try:
+            logger.info(f"Getting emails from {self.imap_server}")
+            with imaplib.IMAP4_SSL(self.imap_server, self.imap_port) as mail:
                 mail.login(self.imap_username, self.imap_password)
                 mail.select("inbox")
 
@@ -162,8 +129,10 @@ class EmailManager:
                             # Marcar el correo como leído (SEEN)
                             mail.store(mail_id, '+FLAGS', '\\Seen')
 
-            except Exception as e:
-                print(f"Error al obtener correos: {e}")
-            
+        except Exception as e:
+            logger.error(f"Error getting emails: {e}")
+            return []
+
+        logger.info(f"Unread emails got: {len(emails_info)}")
         return emails_info
 

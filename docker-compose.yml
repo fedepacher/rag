@@ -81,14 +81,18 @@ services:
       IMAP_USERNAME: "tambo2022@zohomail.com"
       IMAP_PASSWORD: ""
 
+      EMAIL_REST_SEC: 30
+
+      PYTHONUNBUFFERED: 1
     # para dev luego eliminar
-    volumes:
-      - /mnt/c/cmv-new/Python/pa_facu/fceia_chat/rag/email/app:/app  # Volumen agregado
+    # volumes:
+    #   - /mnt/c/cmv-new/Python/pa_facu/fceia_chat/rag/email/app:/app  # Volumen agregado
     networks:
       rag_network:
         aliases:
           - email
-
+    command: python /app/email_main.py
+    #command: 'python -c "while True: pass"'
 
 
 networks:
