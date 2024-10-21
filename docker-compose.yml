@@ -83,6 +83,8 @@ services:
 
       EMAIL_REST_SEC: 30
 
+      LOGO_PATH: "logo.png"
+
       PYTHONUNBUFFERED: 1
     # para dev luego eliminar
     # volumes:

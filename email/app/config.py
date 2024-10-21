@@ -32,5 +32,7 @@ class Config:
             self.imap_password = os.getenv("IMAP_PASSWORD")
 
             self.email_rest_sec = os.getenv("EMAIL_REST_SEC")
+
+            self.logo_path = os.getenv("LOGO_PATH")
         except Exception as e:
             logging.error(f"Error loading configuration: {e}")

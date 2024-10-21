@@ -4,6 +4,7 @@ import imaplib
 import email
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.image import MIMEImage
 from email.header import decode_header
 
 from config import Config
@@ -43,24 +44,42 @@ class EmailManager:
         
         self.email_rest_sec = config.email_rest_sec
 
+        self.logo_path = config.logo_path
+
     def send_email(self, subject, body, to_address_list):
         try:
             logger.info(f"Sending email to {to_address_list}")
             from_address = self.smtp_username
 
             # mensaje MIME
-            msg = MIMEMultipart()
+            msg = MIMEMultipart("related") # "related" -> p agregar logo
             msg['From'] = from_address
             msg['To'] = ", ".join(to_address_list)  # Unir la lista de destinatarios con comas
             msg['Subject'] = subject
 
-            # cuerpo del mensaje, codificación UTF-8
-            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+            html = f"""
+            <html>
+            <body>
+                <p>{body}</p>
+                <p>Gracias por tu consulta. Esperamos que esta respuesta sea de ayuda y quedamos atentos a cualquier otra inquietud.</p>
+                <img src="cid:logo_image" alt="Logo" />
+            </body>
+            </html>
+            """
+            msg.attach(MIMEText(html, 'html', 'utf-8'))
+
+            # adjunto logo
+            with open(self.logo_path, 'rb') as img_file:
+                img = MIMEImage(img_file.read())
+                img.add_header('Content-ID', '<logo_image>')
+                img.add_header('Content-Disposition', 'inline', filename=os.path.basename(self.logo_path))
+                msg.attach(img)
+
 
             with smtplib.SMTP_SSL(self.smtp_server, self.smtp_port) as smtp:
                 smtp.login(self.smtp_username, self.smtp_password)
                 smtp.sendmail(from_address, to_address_list, msg.as_string())
-
+    
         except Exception as e:
             logger.error(f"Error sending email: {e}")
 
