@@ -1,0 +1,19 @@
+FROM python:3.11
+
+# Set the working directory in the container
+WORKDIR /app
+
+# Copy the contents of both API and email folders into the container
+COPY ./rag /app/rag
+COPY ./resources /app/resources
+
+# Copy other files as needed
+COPY requirements.txt /app/
+
+# Install any Python dependencies required for your email process
+RUN pip install --no-cache-dir -r requirements.txt
+
+ENV PYTHONPATH=/app
+
+# Run the email service when the container starts
+CMD ["python", "rag/main.py"]

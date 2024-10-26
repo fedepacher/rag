@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Responsive Email Template</title>
+	<style>
+        .celda-estilizada {
+            /*width: 300px;         /* Ancho de la celda */
+            /*height: 150px;       /* Alto de la celda */
+			padding: 5px;
+            background-color: white; /* Color de fondo de la celda */
+            border: 3px solid #FF6600;/* Borde naranja */
+            border-radius: 15px; /* Esquinas redondeadas */
+        }
+    </style>
+</head>
+<body style="font-family: Verdana, Arial, sans-serif">
+    <table width="100%" border="0" cellspacing="0" cellpadding="0">
+        <tr>
+            <td align="center" style="padding: 20px;">
+                <table class="content" width="600" border="0" cellspacing="0" cellpadding="0" style="border-collapse: collapse; border: 1px solid #cccccc;">
+                    <!-- Header -->
+                    <tr>
+                      <td class="header" style="background-color: #FF6600; padding: 40px; text-align: center; color: white; font-size: 24px;"><strong>Dispositivos y Circuitos Electr&oacute;nicos I</strong><br>
+                          <em>Servicio de consultas online</em> </td>
+                    </tr>
+
+                    <!-- Body -->
+                    <tr>
+                        <td class="body" style="padding: 40px; text-align: left; font-size: 16px; line-height: 1.6;">
+                        Hola, {{username}}! <br><br>
+                        La respuesta a su pregunta: 
+                        <br>
+                        {{pregunta}}
+                        <br><br>
+                        {{respuesta}}              
+                        </td>
+                    </tr>
+
+                    <!-- Call to action Button -->
+                    <tr>
+                        <td style="padding: 0px 40px 0px 40px; text-align: center;">
+                            <!-- CTA Button -->
+                            <table cellspacing="0" cellpadding="0" style="margin: auto;">
+                                <tr>
+                                    <td align="center">
+									<div class="celda-estilizada"> <a href="https://www.yourwebsite.com" target="_blank" style="color: #FF6600
+										; text-decoration: none; font-weight: bold;">Su opini&oacute;n nos interesa<br>
+                                      Haga clic aqu&iacute; para calificar la respuesta</a></div>
+                                       
+                                  </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td class="body" style="padding: 10px; text-align: left; font-size: 16px; line-height: 1.6;">
+                           <p></p>          
+                        </td>
+                    </tr>
+                    <!-- Footer -->
+                    <tr>
+                        <td class="footer" style="background-color: #FF6600; padding: 40px; text-align: center; color: white; font-size: 14px; font-weight:bold">
+                        Generado autom&aacute;ticamente por IA - Copyright &copy; 2024 
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+
+</html>

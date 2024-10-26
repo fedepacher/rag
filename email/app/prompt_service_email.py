@@ -9,9 +9,9 @@ from bson.objectid import ObjectId
 
 # from api.app.schema import prompt_schema, user_schema
 # from api.app.model.prompt_model import Prompt as PromptModel
-from prompt_model import Prompt as PromptModel
+# from prompt_model import Prompt as PromptModel
 # from api.app.utils.serialization import serialize_mongo_document
-
+from api.app.model.prompt_model import Prompt as PromptModel
 from logger_config import logger
 
 

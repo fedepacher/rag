@@ -5,7 +5,8 @@ from logger_config import logger
 
 from email_manager import EmailManager
 
-from prompt_model import Prompt
+# from prompt_model import Prompt
+from api.app.model.prompt_model import Prompt
 from prompt_service_email import input_prompt, get_one_to_send, update_doc
 import datetime
 
