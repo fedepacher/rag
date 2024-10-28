@@ -1,20 +1,34 @@
+# FROM python:3.11
+
+# # Set the working directory in the container
+# WORKDIR /app
+
+# # Copy the contents of both API and email folders into the container
+# COPY ./api /app/api
+# COPY ./email /app/email
+
+# # Copy other files as needed
+# COPY requirements.txt /app/
+
+# # Install any Python dependencies required for your email process
+# RUN pip install --no-cache-dir -r requirements.txt
+
+# ENV PYTHONPATH=/app
+
+# # Run the email service when the container starts
+# CMD ["python", "email/app/email_main.py"]
+
 FROM python:3.11
 
-# Set the working directory in the container
-WORKDIR /app
+COPY requirements.txt .
 
-# Copy the contents of both API and email folders into the container
-COPY ./api /app/api
-COPY ./email /app/email
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+#COPY ./app /app
+COPY ./email/app /app
 COPY ./resources /app/resources
 
-# Copy other files as needed
-COPY requirements.txt /app/
+WORKDIR /app
 
-# Install any Python dependencies required for your email process
-RUN pip install --no-cache-dir -r requirements.txt
-
-ENV PYTHONPATH=/app
-
-# Run the email service when the container starts
-CMD ["python", "email/app/email_main.py"]
+#CMD ["python", "-c", "while True: pass"]
+CMD ["python", "email_main.py"]

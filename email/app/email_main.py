@@ -5,8 +5,7 @@ from logger_config import logger
 
 from email_manager import EmailManager
 
-# from prompt_model import Prompt
-from api.app.model.prompt_model import Prompt
+from prompt_model import Prompt
 from prompt_service_email import input_prompt, get_one_to_send, update_doc
 import datetime
 
@@ -42,10 +41,13 @@ def main():
                 document_id = str(doc_to_send['_id'])
                 destinatarios = [doc_to_send['email']]
                 asunto = "Respuesta automatica a su consulta"
+                consulta = doc_to_send['input']
                 mensaje = doc_to_send['output']
-                e_manager.send_email(asunto, mensaje, destinatarios)
-                # marcarlo como enviado
-                update_doc(document_id, "sent")
+                if e_manager.send_email(asunto, consulta, mensaje, destinatarios):
+                    # marcarlo como enviado
+                    update_doc(document_id, "sent")
+                else:
+                    update_doc(document_id, "error_sending")                    
             else:
                 is_a_doc_to_send = False
 
@@ -55,12 +57,12 @@ def main():
 
 
     # # Definir los parámetros para el envío del correo
-    # destinatarios = ["charlyv@fceia.unr.edu.ar", "fedepacher@gmail.com"]
-    # asunto = "Test email desde la clase EmailManager - 03"
-    # mensaje = "Este es un mensaje de prueba enviado desde la clase EmailManager usando variables de entorno."
+    # destinatarios = ["charlyvare19@gmail.com", "fedepacher@gmail.com"] #["charlyvare19@gmail.com"] 
+    # asunto = "Prueba email con logo 3"
+    # mensaje = "Este es un mensaje de prueba..."
 
     # # Enviar el correo electrónico usando el método send_email
-    # #e_manager.send_email(asunto, mensaje, destinatarios)
+    # e_manager.send_email(asunto, mensaje, destinatarios)
 
 
     # ########## testeo para obtener emails no leidos ##############
