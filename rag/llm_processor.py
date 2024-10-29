@@ -22,7 +22,7 @@ class BaseLLMProcessor:
     def ask_question(self, question: str, context: str):
         pass
 
-    def process_questionnaire(self, question: str, file_data: Document) -> str:
+    def process_questionnaire(self, question: str, file_data: Document) -> str | None:
         context = file_data.get_file_content()
 
         answer = self.ask_question(question, context)
@@ -66,10 +66,12 @@ class LLMProcessorOpenLLM(BaseLLMProcessor):
         super().__init__(llm, None, None)
 
     def ask_question(self, question: str, context: str):
-        template = """Responda la pregunta basandose unicamente en el contexto del PDF. Si no encunetra la respuesta no alucine, responda que no sabe. 
-                      Pregunta: {question}
-                      Contexto: {context}
-                      Respuesta:
+        template = """Eres un asistente que debe responder preguntas basadas únicamente en la información proporcionada en el siguiente documento. No inventes respuestas ni utilices conocimientos externos. Si la respuesta no se encuentra en el documento, simplemente responde: "No sé la respuesta basada en la información proporcionada."
+
+                    [DOCUMENTO: {context}]
+                    
+                    Pregunta: {question}
+                    Respuesta:
                    """
 
         qa_chain_prompt = PromptTemplate(template=template, input_variables=["question", "context"])
@@ -95,10 +97,12 @@ class LLMProcessorHuggingFace(BaseLLMProcessor):
 
     def ask_question(self, question: str, context: str):
 
-        template = """Responda la pregunta basandose unicamente en el contexto del PDF. Si no encunetra la respuesta no alucine, responda que no sabe. 
-                      Pregunta: {question}
-                      Contexto: {context}
-                      Respuesta:
+        template = """Eres un asistente que debe responder preguntas basadas únicamente en la información proporcionada en el siguiente documento. No inventes respuestas ni utilices conocimientos externos. Si la respuesta no se encuentra en el documento, simplemente responde: "No sé la respuesta basada en la información proporcionada."
+
+                    [DOCUMENTO: {context}]
+                    
+                    Pregunta: {question}
+                    Respuesta:
                    """
 
         qa_prompt = template.format(question=question, context=context)

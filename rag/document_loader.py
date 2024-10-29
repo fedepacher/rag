@@ -52,8 +52,8 @@ class Document:
 
         return file_text
 
-    def get_chunked_text(self, project_metadata, context_length):
-        merged_text = self.get_file_content(project_metadata)
+    def get_chunked_text(self, context_length):
+        merged_text = self.get_file_content()
         chunked_text = self.chunk_text(merged_text, context_length)
 
         return chunked_text
