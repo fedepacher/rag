@@ -68,7 +68,7 @@ class MessageProcessor:
 
 
 def main(api_url, document_location, mongo_host, mongo_port, mongo_user, mongo_pass, mongo_db_name,
-         openai_api_key, openllm_server, huggingface_server):
+         openai_api_key, openllm_server, huggingface_server, ollama_server_url):
     logging.info("Starting system")
     api_client = APIClient(api_url, token=None)
     logging.info(f"Connecting to local database {mongo_host}")
@@ -106,7 +106,7 @@ def main(api_url, document_location, mongo_host, mongo_port, mongo_user, mongo_p
         context_length = 32000
         embedding = GPT4AllEmbeddings()
         llm_processor = LLMProcessorOpenAI(llm, embedding, context_length)
-        assert requests.get(url="http://localhost:11434/").ok, "Ollama is not running"
+        assert requests.get(url=ollama_server_url).ok, "Ollama is not running"
 
     message_processor = MessageProcessor(api_client, document_loader, mongo_collection, llm_processor)
     message_processor.run_continuous()
@@ -123,6 +123,7 @@ if __name__ == '__main__':
     OPENLLM_SERVER = os.getenv('OPENLLM_SERVER', None)
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', None)
     HUGGINGFACE_SERVER = os.getenv('HUGGINGFACE_SERVER', None)
+    OLLAMA_SERVER_URL = os.getenv('OLLAMA_SERVER_URL', None)
 
     main(API_URL, DOCUMENT_LOCATION, MONGO_HOST, MONGO_PORT, MONGO_USER, MONGO_PASS, MONGO_DB_NAME,
-         OPENAI_API_KEY, OPENLLM_SERVER, HUGGINGFACE_SERVER)
+         OPENAI_API_KEY, OPENLLM_SERVER, HUGGINGFACE_SERVER, OLLAMA_SERVER_URL)

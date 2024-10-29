@@ -1,0 +1,8 @@
+FROM ollama/ollama:0.1.48
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive \
+    apt-get install --no-install-recommends --assume-yes \
+      curl
+RUN ollama serve & \
+    curl --retry 10 --retry-connrefused --retry-delay 1 http://ollama:11434/ && \
+    curl -X POST -d '{"name": "mistral"}' http://ollama:11434/api/pull
