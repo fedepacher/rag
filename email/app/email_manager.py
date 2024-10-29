@@ -6,11 +6,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.image import MIMEImage
 from email.header import decode_header
-
 from config import Config
-
-from datetime import datetime
-
 from logger_config import logger
 
 
@@ -20,32 +16,34 @@ class EmailManager:
         logger.info("Loading EmailManager configuration")
         self.db_name = config.db_name
         self.db_user = config.db_user
-        self.db_pass = config.db_pass  # Definir en 'config' o usar una variable por defecto
-        self.db_host = config.db_host  # Definir en 'config' o usar una variable por defecto
-        self.db_port = config.db_port  # Definir en 'config' o usar una variable por defecto
-        self.access_token_expire_minutes = config.access_token_expire_minutes  # Definir en 'config' o usar una variable por defecto
-        self.secret_key = config.secret_key  # Definir en 'config' o usar una variable por defecto
+        self.db_pass = config.db_pass
+        self.db_host = config.db_host
+        self.db_port = config.db_port
+        self.access_token_expire_minutes = config.access_token_expire_minutes
+        self.secret_key = config.secret_key
 
-        self.mongo_host = config.mongo_host  # Definir en 'config' o usar una variable por defecto
-        self.mongo_db_name = config.mongo_db_name  # Definir en 'config' o usar una variable por defecto
-        self.mongo_port = config.mongo_port  # Definir en 'config' o usar una variable por defecto
-        self.mongo_user = config.mongo_user  # Definir en 'config' o usar una variable por defecto
-        self.mongo_pass = config.mongo_pass  # Definir en 'config' o usar una variable por defecto
+        self.mongo_host = config.mongo_host
+        self.mongo_db_name = config.mongo_db_name
+        self.mongo_port = config.mongo_port
+        self.mongo_user = config.mongo_user
+        self.mongo_pass = config.mongo_pass
 
-        self.smtp_server = config.smtp_server  # Definir en 'config' o usar una variable por defecto
-        self.smtp_port = config.smtp_port  # Definir en 'config' o usar una variable por defecto
-        self.smtp_username = config.smtp_username  # Definir en 'config' o usar una variable por defecto
-        self.smtp_password = config.smtp_password  # Definir en 'config' o usar una variable por defecto
+        self.smtp_server = config.smtp_server
+        self.smtp_port = config.smtp_port
+        self.smtp_username = config.smtp_username
+        self.smtp_password = config.smtp_password
 
-        self.imap_server = config.imap_server  # Definir en 'config' o usar una variable por defecto
-        self.imap_port = config.imap_port  # Definir en 'config' o usar una variable por defecto
-        self.imap_username = config.imap_username  # Definir en 'config' o usar una variable por defecto
-        self.imap_password = config.imap_password  # Definir en 'config' o usar una variable por defecto
+        self.imap_server = config.imap_server
+        self.imap_port = config.imap_port
+        self.imap_username = config.imap_username
+        self.imap_password = config.imap_password
         
         self.email_rest_sec = config.email_rest_sec
 
         self.logo_path = config.logo_path
         self.email_tmpt_path = config.email_tmpt_path
+
+
     def send_email(self, subject, consulta, body, to_address_list) -> bool:
         """
         Intenta mandar el email. Si lo consigue retorna True. Caso contrario False
@@ -69,17 +67,6 @@ class EmailManager:
                             .replace('{{username}}', "estimado usuario")
                             .replace('{{pregunta}}', consulta)
                             .replace('{{respuesta}}', body))
-
-            # html = f"""
-            # <html>
-            # <body>
-            #     <p>{body}</p>
-            #     <p>Gracias por tu consulta. Esperamos que esta respuesta sea de ayuda y quedamos atentos a cualquier otra inquietud.</p>
-            #     <img src="cid:logo_image" alt="Logo" />
-            # </body>
-            # </html>
-            # """
-            # msg.attach(MIMEText(html, 'html', 'utf-8'))
 
             msg.attach(MIMEText(html_content, 'html', 'utf-8'))
 

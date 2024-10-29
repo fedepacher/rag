@@ -27,12 +27,10 @@ def main():
         # loop: guardado emails no leidos en db
         for email_dict in unread_emails:
             prompt = email_dict['body']
-            #date = datetime(2024, 9, 22, 13, 45, 30)
             email = email_dict['from']
             prompt_to_input = Prompt(input=prompt, email=email)
             input_prompt(prompt_to_input)
 
-        
         # loop: buscando desde la db para enviar
         is_a_doc_to_send = True
         while is_a_doc_to_send:
@@ -52,60 +50,6 @@ def main():
                 is_a_doc_to_send = False
 
         sleep(int(e_manager.email_rest_sec))
-
-    ############### testeo para enviar emails #####################
-
-
-    # # Definir los parámetros para el envío del correo
-    # destinatarios = ["charlyvare19@gmail.com", "fedepacher@gmail.com"] #["charlyvare19@gmail.com"] 
-    # asunto = "Prueba email con logo 3"
-    # mensaje = "Este es un mensaje de prueba..."
-
-    # # Enviar el correo electrónico usando el método send_email
-    # e_manager.send_email(asunto, mensaje, destinatarios)
-
-
-    # ########## testeo para obtener emails no leidos ##############
-    # # unread_emails = e_manager.get_unread_emails()
-    # # print(unread_emails)
-    # # de esta anterior se obtiene algo como esto:
-    # unread_emails = [{'from': 'Carlos M Varela <charlyv@fceia.unr.edu.ar>', 'date': datetime.datetime(2024, 9, 14, 19, 21, 1, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=75600))), 'subject': 'Re: Test email desde la clase EmailManager - 01', 'body': 'Hola 12345'}, {'from': 'char var <charlyvare19@gmail.com>', 'date': datetime.datetime(2024, 9, 28, 12, 16, 46, tzinfo=datetime.timezone(datetime.timedelta(days=-1, seconds=75600))), 'subject': 'Re: Test email from Python', 'body': 'Respuesta desde gmail\r\n\r\nEl sáb, 7 sept 2024 a las 18:51, <tambo2022@zohomail.com> escribió:\r\n\r\n> Si esto funciona, ya está lo basico al menos para probar con emails, hasta\r\n> que consigamos alguna cuanta. Por el momento con esta se podria, al menos\r\n> para probar\r\n'}]
-
-
-    # # ########## testeo para guardar en la mongo ###############
-    # # prompt = "Que es un FET?"
-    # # #date = datetime(2024, 9, 22, 13, 45, 30)
-    # # email = "charlyv@fceia.unr.edu.ar"
-    # # prompt_to_input = Prompt(input=prompt, email=email)
-    # # input_prompt(prompt_to_input)
-
-    # prompt = unread_emails[0]['body']
-    # #date = datetime(2024, 9, 22, 13, 45, 30)
-    # email = unread_emails[0]['from']
-    # prompt_to_input = Prompt(input=prompt, email=email)
-    # input_prompt(prompt_to_input)
-
-
-
-
-
-    # ########## testeo para obtener de la mongo ###############
-    # doc_to_send = get_one_to_send()
-    # if doc_to_send is not None:
-    #     document_id = str(doc_to_send['_id'])
-    #     print(f"type(doc_to_send): {type(doc_to_send)}")
-    #     print(f"doc_to_send: {doc_to_send}")
-    #     print(f"document_id: {document_id}")
-
-    #     print("enviando email...")
-    #     destinatarios = [doc_to_send['email']]
-    #     asunto = "Respuesta automatica a su consulta"
-    #     mensaje = doc_to_send['output']
-    #     e_manager.send_email(asunto, mensaje, destinatarios)
-
-    #     ########## testeo para update la mongo ##############
-    #     update_doc(document_id, "sent")
-
 
 
 if __name__ == "__main__":

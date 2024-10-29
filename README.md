@@ -13,7 +13,11 @@ mongosh --host localhost --port 27017 -u mongoadmin -p secret --authenticationDa
 
 use test_nosql
 
+db.prompts.find().toArray()
+
 db.prompts.find({ output: null }).toArray()
+
+db.prompts.updateOne( { _id: ObjectId('67204a4ffbd470bb9c202696') }, { $set: { status: null } })
 
 ### Ordered by date
 db.prompts.find({ output: null }).sort({ date: 1 }).toArray()
