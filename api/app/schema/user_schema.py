@@ -33,7 +33,7 @@ class User(UserBase):
     )
 
 
-class UserRegister(UserBase):
+class UserSensitiveInformation(BaseModel):
     """Password registration class.
 
     Args:
@@ -45,3 +45,13 @@ class UserRegister(UserBase):
         max_length=64,
         example='mypassword'
     )
+
+
+class UserRegistered(UserBase, UserSensitiveInformation):
+    pass
+
+
+class UserPasswordHandler(UserSensitiveInformation):
+    new_password: str = Field(..., min_length=8, max_length=64, example='newpassword')
+    rewrite_password: str = Field(..., min_length=8, max_length=64, example='rewritenewpassword')
+

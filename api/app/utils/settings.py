@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     mongo_user: str = os.getenv('MONGO_USER')
     mongo_pass: str = os.getenv('MONGO_PASS')
     mongo_db_name: str = os.getenv('MONGO_DB_NAME')  # Replace with your MongoDB database name
+    email: str = os.getenv('EMAIL', None)
+    email_server: str = os.getenv('EMAIL_SERVER', None)
+    email_protocol: str = os.getenv('EMAIL_PROTOCOL', None)
+    email_body: str = os.getenv('EMAIL_BODY', None)
+    email_subject: str = os.getenv('EMAIL_SUBJECT', None)
 
     @property
     def db_name(self):
