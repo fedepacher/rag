@@ -1,4 +1,5 @@
 import os
+import json
 import smtplib
 import imaplib
 import email
@@ -31,17 +32,20 @@ class EmailManager:
         self.smtp_server = config.smtp_server
         self.smtp_port = config.smtp_port
         self.smtp_username = config.smtp_username
-        self.smtp_password = config.smtp_password
 
         self.imap_server = config.imap_server
         self.imap_port = config.imap_port
         self.imap_username = config.imap_username
-        self.imap_password = config.imap_password
         
         self.email_rest_sec = config.email_rest_sec
 
         self.logo_path = config.logo_path
         self.email_tmpt_path = config.email_tmpt_path
+
+        with open('passwords.json', 'r') as file:
+            data = json.load(file)
+        self.smtp_password = data.get('smtp_password')
+        self.imap_password = data.get('imap_password')
 
 
     def send_email(self, subject, consulta, body, to_address_list) -> bool:
