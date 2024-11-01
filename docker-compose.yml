@@ -47,37 +47,37 @@ services:
 #        aliases:
 #          - ollama
 
-#  api:
-#    build:
-#      context: .
-#      dockerfile:  Dockerfile_api
-#    ports:
-#      - "8000:8000"
-#    depends_on:
-#      - database
-#      - mongodb
-#    environment:
-#      DB_NAME: test_sql
-#      DB_USER: rag-system
-#      DB_PASS: rag-system
-#      DB_HOST: database
-#      DB_PORT: 3306
-#      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
-#      SECRET_KEY: 6b3d75e968f26f3be3443503efefd761e22d5e173fea95646a3659e673ebb97b
-#      MONGO_HOST: mongodb
-#      MONGO_DB_NAME: test_nosql
-#      MONGO_PORT: 27017
-#      MONGO_USER: mongoadmin
-#      MONGO_PASS: secret
-#      EMAIL_SERVER: smtp.gmail.com
-#      EMAIL: ivolutionrecovery@gmail.com
-#      EMAIL_PROTOCOL: TLS
-#      EMAIL_BODY: api/app/resources/email/password_changed.txt
-#      EMAIL_SUBJECT: api/app/resources/email/email_subject.txt
-#    networks:
-#      rag_network:
-#        aliases:
-#          - api
+  api:
+    build:
+      context: .
+      dockerfile:  Dockerfile_api
+    ports:
+      - "8000:8000"
+    depends_on:
+      - database
+      - mongodb
+    environment:
+      DB_NAME: test_sql
+      DB_USER: rag-system
+      DB_PASS: rag-system
+      DB_HOST: database
+      DB_PORT: 3306
+      ACCESS_TOKEN_EXPIRE_MINUTES: 1440
+      SECRET_KEY: 6b3d75e968f26f3be3443503efefd761e22d5e173fea95646a3659e673ebb97b
+      MONGO_HOST: mongodb
+      MONGO_DB_NAME: test_nosql
+      MONGO_PORT: 27017
+      MONGO_USER: mongoadmin
+      MONGO_PASS: secret
+      EMAIL_SERVER: smtp.gmail.com
+      EMAIL: ivolutionrecovery@gmail.com
+      EMAIL_PROTOCOL: TLS
+      EMAIL_BODY: api/app/resources/email/password_changed.txt
+      EMAIL_SUBJECT: api/app/resources/email/email_subject.txt
+    networks:
+      rag_network:
+        aliases:
+          - api
 
   # rag:
   #   build:

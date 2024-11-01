@@ -10,6 +10,7 @@ COPY wait-for-it.sh .
 RUN chmod +x wait-for-it.sh
 
 COPY api/ ./api
+COPY passwords.json /app/passwords.json
 
 EXPOSE 8000
 
