@@ -27,16 +27,36 @@ services:
         aliases:
           - mongodb
 
-#  ollama:
-#    build:
-#      context: .
-#      dockerfile: Dockerfile_ollama
-#    ports:
-#      - "11434:11434"
-#    networks:
-#      rag_network:
-#        aliases:
-#          - ollama
+  # ollama:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile_ollama
+  #   ports:
+  #     - "11434:11434"
+  #   networks:
+  #     rag_network:
+  #       aliases:
+  #         - ollama
+
+  ollama:
+    build:
+      context: .  # Asume que el Dockerfile está en el mismo directorio
+      dockerfile: Dockerfile_ollama2
+    container_name: ollama
+    volumes:
+      - ollama:/root/.ollama  # Volumen persistente para el modelo y datos
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    networks:
+      rag_network:
+        aliases:
+          - ollama
+
+
+
+
+
 #  ollama:
 #    image: ollama/ollama:latest
 #    container_name: ollama
@@ -138,6 +158,11 @@ services:
       rag_network:
         aliases:
           - email
+
+
+volumes:
+  ollama:
+
 
 networks:
   rag_network:
