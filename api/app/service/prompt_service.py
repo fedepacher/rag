@@ -20,7 +20,6 @@ def input_prompt(prompt: prompt_schema.Prompt, user: user_schema.User):
     """
     mongo_prompt = PromptModel(
         input=prompt.input,
-        context=prompt.context,
         email=user.email
     )
 

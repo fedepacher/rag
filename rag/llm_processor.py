@@ -19,11 +19,11 @@ class BaseLLMProcessor:
     def answer_json_parser(self, str_obj: str) -> list:
         pass
 
-    def ask_question(self, question: str, context: str):
+    def ask_question(self, question: str, context):
         pass
 
     def process_questionnaire(self, question: str, file_data: Document) -> str | None:
-        context = file_data.get_file_content()
+        context = file_data.get_chunked_text(self.context_length)
 
         answer = self.ask_question(question, context)
 
@@ -34,9 +34,9 @@ class LLMProcessorOpenAI(BaseLLMProcessor):
     def __init__(self, llm, embedding, context_length):
         super().__init__(llm, embedding, context_length)
 
-    def ask_question(self, question: str, context: str):
+    def ask_question(self, question: str, context):
         logging.debug(f"Processing {len(context)} chunks of text for question")
-        vectorstore = Chroma.from_texts(texts=[context], embedding=self.embedding)
+        vectorstore = Chroma.from_texts(texts=context, embedding=self.embedding)
 
         template = """Eres un asistente que debe responder preguntas basadas únicamente en la información proporcionada en el siguiente documento. No inventes respuestas ni utilices conocimientos externos. Si la respuesta no se encuentra en el documento, simplemente responde: "No sé la respuesta basada en la información proporcionada."
 
@@ -65,7 +65,7 @@ class LLMProcessorOpenLLM(BaseLLMProcessor):
     def __init__(self, llm):
         super().__init__(llm, None, None)
 
-    def ask_question(self, question: str, context: str):
+    def ask_question(self, question: str, context):
         template = """Eres un asistente que debe responder preguntas basadas únicamente en la información proporcionada en el siguiente documento. No inventes respuestas ni utilices conocimientos externos. Si la respuesta no se encuentra en el documento, simplemente responde: "No sé la respuesta basada en la información proporcionada."
 
                     [DOCUMENTO: {context}]
@@ -95,7 +95,7 @@ class LLMProcessorHuggingFace(BaseLLMProcessor):
         self.server_url = server_url
         self.output_tokens = output_tokens
 
-    def ask_question(self, question: str, context: str):
+    def ask_question(self, question: str, context):
 
         template = """Eres un asistente que debe responder preguntas basadas únicamente en la información proporcionada en el siguiente documento. No inventes respuestas ni utilices conocimientos externos. Si la respuesta no se encuentra en el documento, simplemente responde: "No sé la respuesta basada en la información proporcionada."
 

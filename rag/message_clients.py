@@ -12,19 +12,18 @@ MESSAGE_FAILURE_SLEEP_SEC = 15
 
 
 class MessageData:
-    def __init__(self, id: str, input: str, date: datetime, output: str, context: str, email: str, status: str):
+    def __init__(self, id: str, input: str, date: datetime, output: str, email: str, status: str):
         self.id = id
         self.input = input
         self.date = date
         self.output = output
-        self.context = context
         self.email = email
         self.status = status
 
     @property
     def json(self):
         return json.dumps({'id': self.id, 'input': self.input, 'date': self.date, 'output': self.output,
-                           'context': self.context, 'email': self.email, 'status': self.status})
+                           'email': self.email, 'status': self.status})
 
     def __str__(self):
         return str(self.json)
@@ -77,7 +76,6 @@ class APIClient(MessageClient):
                     input=message['input'],
                     date=message['date'],
                     output=message['output'],
-                    context=message['context'],
                     email=message['email'],
                     status=message['status']
                 )
