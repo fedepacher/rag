@@ -41,7 +41,7 @@ services:
   ollama:
     build:
       context: .  # Asume que el Dockerfile está en el mismo directorio
-      dockerfile: Dockerfile_ollama2
+      dockerfile: Dockerfile_ollama
     container_name: ollama
     volumes:
       - ollama:/root/.ollama  # Volumen persistente para el modelo y datos
@@ -54,7 +54,15 @@ services:
           - ollama
 
 
-
+  ollama-setup:
+    depends_on:
+      - ollama
+    build:
+      context: .
+      dockerfile: Dockerfile-ollama-setup
+    container_name: ollama-setup
+    networks:
+      - rag_network
 
 
 #  ollama:
