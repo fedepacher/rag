@@ -39,7 +39,7 @@ los sistemas.
 De esta manera se respondera las preguntas mas antiguas primero.
 
 - **Ollama server**: Servicio que sera utilizado para poner en en funcionamiento un sistema de LLM el cual es consultado 
-- por el servicio RAG.
+por el servicio RAG.
 
 
 
@@ -76,14 +76,14 @@ la ventana de contexto finita de un modelo.
 3. **Almacenamiento**: necesitamos un lugar para almacenar e indexar nuestras divisiones, de modo que luego se puedan buscar. 
 Esto se hace a menudo utilizando un modelo VectorStore e incrustaciones.
 
-<p align=center><img src=resources/assets/data_index.png height=500 weight=900><p>
+<p align=center><img src=resources/assets/data_index.png height=300 weight=900><p>
 
 **Recuperación y generación**
 4. **Recuperar**: dada una entrada del usuario, las divisiones relevantes se recuperan del almacenamiento mediante un 
 recuperador.
 5. **Generar**: un ChatModel/LLM produce una respuesta mediante un mensaje que incluye la pregunta y los datos recuperados
 
-<p align=center><img src=resources/assets/retrieve.png height=500 weight=900><p>
+<p align=center><img src=resources/assets/retrieve.png height=300 weight=900><p>
 
 
 ## Base de datos relacional MySQL
@@ -120,7 +120,7 @@ usuario se puede realizar a traves del endpoint `login` o mediante el boton `Aut
 derecha.
 Las imagenes a continuacion muestran los endpoints disponibles en la API para las acciones descriptas anteriormente:
 
-<p align=center><img src=resources/assets/swagger.png height=500 weight=900><p>
+<p align=center><img src=resources/assets/swagger.png height=300 weight=900><p>
 
 Se utiliza Swagger UI para la visualizacion de los endpoints ya que ofrece una visual mas amigable al usuario.
 El proceso de login genera un Token que posee una duracion de 24hs, pasado este tiempo el usuario debera loguearse 
@@ -144,7 +144,7 @@ pregunta ingresada al sistema. Esto proceso sera realizado mediante el chequeo d
 la base de datos Mongo, si dicho campo posee el valor `null` la pregunta sera procesada. Finalizado este proceso
 se almacenara la respuesta en la base de datos Mongo.
 
-<p align=center><img src=resources/assets/login.png height=500 weight=900><p>
+<p align=center><img src=resources/assets/query_nosql.png height=500 weight=900><p>
 
 El sistema de envio de respuesta funciona de manera similar al sistema RAG, estara chequeando la base de datos MongoDB
 en busca de los campos `output` distinto de `null` y `status` igual a `null`. Cunado encunetra esta condicion procede 
@@ -250,7 +250,6 @@ Y podremos inspeccionar el contenido de dicha base de datos con el siguiente com
 db.prompts.find().toArray()
 ```
 
-<p align=center><img src=resources/assets/query_nosql.png height=500 weight=900><p>
 
 
 # api
