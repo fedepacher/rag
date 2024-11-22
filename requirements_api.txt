@@ -19,13 +19,3 @@ gunicorn==22.0.0
 cryptography==43.0.0
 mysql-connector-python==9.0.0
 pymongo
-pypdf2
-langchain
-langchain-community
-langchain-core
-openai
-pypdf2
-tiktoken
-python-docx
-chromadb
-gpt4all

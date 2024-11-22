@@ -1,8 +1,3 @@
-#desde api/app/ archivo de nombre semejante (lo modificaré según convenga)
-import logging
-from fastapi import HTTPException, status
-from pymongo import ASCENDING
-
 from db_nosql import mongo_collection  # Import the MongoDB collection
 
 from bson.objectid import ObjectId 

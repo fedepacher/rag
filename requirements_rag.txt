@@ -1,0 +1,11 @@
+pymongo
+pypdf2
+langchain
+langchain-community
+langchain-core
+openai
+pypdf2
+tiktoken
+python-docx
+chromadb
+gpt4all

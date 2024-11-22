@@ -147,7 +147,7 @@ se almacenara la respuesta en la base de datos Mongo.
 <p align=center><img src=resources/assets/query_nosql.png height=500 weight=900><p>
 
 El sistema de envio de respuesta funciona de manera similar al sistema RAG, estara chequeando la base de datos MongoDB
-en busca de los campos `output` distinto de `null` y `status` igual a `null`. Cunado encunetra esta condicion procede 
+en busca de los campos `output` distinto de `null` y `status` igual a `null`. Cuando encunetra esta condicion procede 
 al envio de la respuesta mediante email y posteriormente actualiza el `status` a `sent`.
 
 <p align=center><img src=resources/assets/email.png height=500 weight=900><p>
@@ -158,8 +158,8 @@ Este proyecto fue planteado con una duracion de 3 meses. El roadmap propuesto se
 
 <p align=center><img src=resources/assets/roadmap.png height=500 weight=900><p>
 
-Las tareas propuestas fueron descriptas mediante issues y se pueden encontrar en el siguiente [link](https://github.com/users/fedepacher/projects/7/views/3)
-Cada issue consto de una descripcion detallada del problema y diferentes items a ser resultos. Ademas se estimo un 
+Las tareas propuestas fueron descriptas mediante issues y se pueden encontrar en el siguiente [link](https://github.com/users/fedepacher/projects/7/views/3).<br>
+Cada issue consto de una descripcion detallada del problema y diferentes items a ser resueltos. Ademas se estimo un 
 tiempo de desarrollo una prioridad y una fecha estimada de inicio y finalizacion que se intento cumplir.
 
 <p align=center><img src=resources/assets/issue.png height=500 weight=900><p>
@@ -168,7 +168,7 @@ tiempo de desarrollo una prioridad y una fecha estimada de inicio y finalizacion
 
 Para poner el sistema de en funcionamiento se utilizo contenedores, cada servicio posee su propio contenedor y 
 orquestado mediante un archivo `docker-compose.yml`.
-Es indispensable prefio a la ejecucion del contenedor crear un archivo que contiene las credenciales del sistema. El
+Es indispensable previo a la ejecucion del contenedor crear un archivo que contiene las credenciales del sistema. El
 archivo debe llevar el nombre de `passwords.json` y debe contener lo siguiente:
 
 ```
@@ -250,39 +250,10 @@ Y podremos inspeccionar el contenido de dicha base de datos con el siguiente com
 db.prompts.find().toArray()
 ```
 
+## Acceso a la API via la interfaz Swagger UI
 
+El siguiente link esta disponible para poder utilizar los endpoint de la API
 
-# api
-
-DB_NAME: test_sql
-DB_USER: rag-system
-DB_PASS: rag-system
-DB_HOST: localhost
-DB_PORT: 3306
-ACCESS_TOKEN_EXPIRE_MINUTES: 1440
-SECRET_KEY: 6b3d75e968f26f3be3443503efefd761e22d5e173fea95646a3659e673ebb97b
-MONGO_HOST: localhost
-MONGO_PORT: 27017
-MONGO_USER: mongoadmin
-MONGO_PASS: secret
-MONGO_DB_NAME: test_nosql
-      
-      
-
-# rag
-      
-API_URL=http://127.0.0.1:8000
-DOCUMENT_LOCATION=resources/files
-MONGO_DB_NAME=test_nosql
-MONGO_DB_NAME=test_nosql
-MONGO_HOST=localhost
-MONGO_PASS=secret
-MONGO_PORT=27017
-MONGO_USER=mongoadmin
-PYTHONUNBUFFERED=1
-
-# Ollama server
-
-ollama serve
-
-ollama run mistral
+```
+http://127.0.0.1:8000/docs
+```

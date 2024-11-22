@@ -1,6 +1,6 @@
 FROM python:3.11
 
-COPY requirements.txt .
+COPY requirements_email.txt ./requirements.txt
 
 RUN pip install --upgrade pip && pip install -r requirements.txt
 

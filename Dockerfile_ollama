@@ -1,8 +1,20 @@
-FROM ollama/ollama:0.1.48
-RUN apt-get update && \
-    DEBIAN_FRONTEND=noninteractive \
-    apt-get install --no-install-recommends --assume-yes \
-      curl
-RUN ollama serve & \
-    curl --retry 10 --retry-connrefused --retry-delay 1 http://ollama:11434/ && \
-    curl -X POST -d '{"name": "mistral"}' http://ollama:11434/api/pull
+#FROM ollama/ollama:0.1.48
+#RUN apt-get update && \
+#    DEBIAN_FRONTEND=noninteractive \
+#    apt-get install --no-install-recommends --assume-yes \
+#      curl
+#RUN ollama serve & \
+#    curl --retry 10 --retry-connrefused --retry-delay 1 http://ollama:11434/ && \
+#    curl -X POST -d '{"name": "mistral"}' http://ollama:11434/api/pull
+
+# Dockerfile
+FROM ollama/ollama:0.3.14
+
+# Copiar el script de inicio en el contenedor
+COPY startup.sh /root/startup.sh
+
+# Dar permisos de ejecución al script
+RUN chmod +x /root/startup.sh
+
+# Definir el script de inicio como entrypoint
+ENTRYPOINT ["/bin/sh", "-c", "/root/startup.sh"]

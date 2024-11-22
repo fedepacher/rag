@@ -8,7 +8,7 @@ COPY ./rag /app/rag
 COPY ./resources /app/resources
 
 # Copy other files as needed
-COPY requirements.txt /app/
+COPY requirements_rag.txt /app/requirements.txt
 
 # Install any Python dependencies required for your email process
 RUN pip install --no-cache-dir -r requirements.txt
