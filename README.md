@@ -1,3 +1,7 @@
+<p align="right">
+  <img src="resources/assets/logounr.png" height="100" width="200">
+</p>
+
 <p align=center><img src=resources/assets/front.png height=500 weight=1247><p>
 
 # Aplicación de un modelo de lenguaje (LLM) a un uso educativo implementado en servidores de pequeño porte
