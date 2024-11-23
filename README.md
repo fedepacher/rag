@@ -41,7 +41,7 @@ De esta manera se respondera las preguntas mas antiguas primero.
 - **Ollama server**: Servicio que sera utilizado para poner en en funcionamiento un sistema de LLM el cual es consultado 
 por el servicio RAG.
 
-
+- **email process**: Este bloque gestiona la interacción con un modelo de lenguaje grande (LLM) y se conecta con una base de datos MongoDB para dejar consultas recibidas por email y enviar respuestas por correo electrónico. Si bien existe una API diseñada para exponer esta funcionalidad como parte de un futuro backend, actualmente estos scripts proporcionan una solución funcional para procesar correos y generar respuestas automatizadas.
 
 <p align=center><img src=resources/assets/diagrama.png height=500 weight=1247><p>
 
@@ -111,6 +111,15 @@ Esta base de datos posee la siguiente estructura:
 - **status**: Bandera que indica si el mail con la respuesta ha sido enviado al usuario. Los posibles estados son `sent`
 que indica que se ha enviado la respuesta o `null` que indica que la respuesta aun no ha sido enviada.
 
+## email process
+
+Este bloque está diseñado para:
+- Recibir solicitudes desde correos electrónicos y cargarlas en la base de datos mongo.
+- Monitorear cuando han sido respondida las consultas observando las respuestas almacenadas en una base de datos.
+- Enviar esas respuestas por correo electrónico de forma automatizada.
+
+Aunque el backend y la API están pensados para implementaciones futuras, este bloque ya permite aprovechar las funcionalidades del sistema, automatizando la interacción entre usuarios y el modelo de lenguaje.
+
 
 ## Flujo de trabajo
 
@@ -151,6 +160,16 @@ en busca de los campos `output` distinto de `null` y `status` igual a `null`. Cu
 al envio de la respuesta mediante email y posteriormente actualiza el `status` a `sent`.
 
 <p align=center><img src=resources/assets/email.png height=500 weight=900><p>
+
+## Flujo de trabajo simplificado por email
+
+Para el usuario final se reusme de la siguiente manera:
+- Enviar un correo con una pregunta a la dirección configurada.
+- Esperar unos momentos mientras el sistema procesa la pregunta.
+- Recibir la respuesta en un correo detallado y bien estructurado.
+
+Este enfoque permite al usuario final interactuar con un sistema avanzado de procesamiento de información (utilizando LLMs) sin necesidad de conocimientos técnicos, aprovechando una interfaz tan familiar como el correo electrónico.
+
 
 ## Roadmap
 
