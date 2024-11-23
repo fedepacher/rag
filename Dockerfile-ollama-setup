@@ -1,0 +1,14 @@
+# Usa una imagen ligera con curl preinstalado
+FROM alpine:latest
+
+# Instalar curl y bash en la imagen
+RUN apk add --no-cache curl bash
+
+# Copiar el script que hace el curl para verificar el estado de Ollama
+COPY startup.sh /startup.sh
+
+# Hacer el script ejecutable
+RUN chmod +x /startup.sh
+
+# Ejecutar el script de verificación cuando inicie el contenedor
+ENTRYPOINT ["/startup.sh"]

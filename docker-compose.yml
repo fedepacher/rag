@@ -47,6 +47,36 @@ services:
 #        aliases:
 #          - ollama
 
+  ollama:
+    build:
+      context: .  # Asume que el Dockerfile está en el mismo directorio
+      dockerfile: Dockerfile_ollama
+    container_name: ollama
+    volumes:
+      - ollama:/root/.ollama  # Volumen persistente para el modelo y datos
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    networks:
+      rag_network:
+        aliases:
+          - ollama
+
+
+  ollama-setup:
+    depends_on:
+      - ollama
+    build:
+      context: .
+      dockerfile: Dockerfile-ollama-setup
+    container_name: ollama-setup
+    networks:
+      - rag_network
+
+
+
+
+
   api:
     build:
       context: .
@@ -79,27 +109,28 @@ services:
         aliases:
           - api
 
-  # rag:
-  #   build:
-  #     context: .
-  #     dockerfile:  Dockerfile_rag
-  #   depends_on:
-  #     - database
-  #     - mongodb
-  #     - ollama
-  #   environment:
-  #     API_URL: "http://127.0.0.1:8000"
-  #     DOCUMENT_LOCATION: resources/files
-  #     MONGO_HOST: mongodb
-  #     MONGO_DB_NAME: test_nosql
-  #     MONGO_PORT: 27017
-  #     MONGO_USER: mongoadmin
-  #     MONGO_PASS: secret
-  #     OLLAMA_SERVER_URL: "http://ollama:11434"
-  #   networks:
-  #     rag_network:
-  #       aliases:
-  #         - rag
+  rag:
+    build:
+      context: .
+      dockerfile:  Dockerfile_rag
+    depends_on:
+      - database
+      - mongodb
+      # - ollama
+    environment:
+      # API_URL: "http://127.0.0.1:8000"
+      API_URL: "http://api:8000"
+      DOCUMENT_LOCATION: app/resources/files
+      MONGO_HOST: mongodb
+      MONGO_DB_NAME: test_nosql
+      MONGO_PORT: 27017
+      MONGO_USER: mongoadmin
+      MONGO_PASS: secret
+      OLLAMA_SERVER_URL: "http://ollama:11434"
+    networks:
+      rag_network:
+        aliases:
+          - rag
 
   email:
     build:
@@ -138,6 +169,9 @@ services:
       rag_network:
         aliases:
           - email
+
+volumes:
+  ollama:
 
 networks:
   rag_network:
