@@ -115,7 +115,7 @@ Esta base de datos posee la siguiente estructura:
 - **status**: Bandera que indica si el mail con la respuesta ha sido enviado al usuario. Los posibles estados son `sent`
 que indica que se ha enviado la respuesta o `null` que indica que la respuesta aun no ha sido enviada.
 
-## email process
+## Email process
 
 Este bloque está diseñado para:
 - Recibir solicitudes desde correos electrónicos y cargarlas en la base de datos mongo.
