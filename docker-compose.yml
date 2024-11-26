@@ -26,33 +26,34 @@ services:
       rag_network:
         aliases:
           - mongodb
-
-  ollama:
-    build:
-      context: .
-      dockerfile: Dockerfile_ollama
-    container_name: ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    depends_on:
-      - database
-      - mongodb
-    networks:
-      rag_network:
-        aliases:
-          - ollama
-
+#
 #  ollama:
-#    image: ollama/ollama:latest
+#    build:
+#      context: .  # Asume que el Dockerfile está en el mismo directorio
+#      dockerfile: Dockerfile_ollama
 #    container_name: ollama
+#    volumes:
+#      - ollama:/root/.ollama  # Volumen persistente para el modelo y datos
+#    restart: unless-stopped
 #    ports:
 #      - "11434:11434"
 #    networks:
 #      rag_network:
 #        aliases:
 #          - ollama
+#    environment:
+#      - USE_CPU=true
+#
+#
+#  ollama-setup:
+#    depends_on:
+#      - ollama
+#    build:
+#      context: .
+#      dockerfile: Dockerfile-ollama-setup
+#    container_name: ollama-setup
+#    networks:
+#      - rag_network
 
   api:
     build:
@@ -89,11 +90,19 @@ services:
   rag:
     build:
       context: .
-      dockerfile:  Dockerfile_rag
+      dockerfile:  Dockerfile-combined
     depends_on:
       - database
       - mongodb
-      - ollama
+    ports:
+      - "11434:11434"  # For Ollama
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:11434 || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    volumes:
+      - ollama:/root/.ollama
     environment:
       API_URL: "http://api:8000"
       DOCUMENT_LOCATION: resources/files
@@ -102,7 +111,7 @@ services:
       MONGO_PORT: 27017
       MONGO_USER: mongoadmin
       MONGO_PASS: secret
-      OLLAMA_SERVER_URL: "http://ollama:11434"
+      OLLAMA_SERVER_URL: "http://localhost:11434"
     networks:
       rag_network:
         aliases:
@@ -137,18 +146,13 @@ services:
       EMAIL_REST_SEC: 30
       LOGO_PATH: "./resources/img/logo.png"
       EMAIL_TMPT_PATH: "./resources/email_template/email_template.txt"
-    # para dev luego eliminar
-    # volumes:
-    #   - /mnt/c/cmv-new/Python/pa_facu/mi_rama_pa_crea_nueva/rag/email/app:/app  # Volumen agregado
-    #   - /mnt/c/cmv-new/Python/pa_facu/mi_rama_pa_crea_nueva/rag/resources:/app/resources  # Volumen agregado
     networks:
       rag_network:
         aliases:
           - email
 
 volumes:
-  ollama_data:
-    driver: local
+  ollama:
 
 networks:
   rag_network:

@@ -9,3 +9,4 @@ tiktoken
 python-docx
 chromadb
 gpt4all
+langchain-ollama

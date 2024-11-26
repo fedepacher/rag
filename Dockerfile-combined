@@ -1,0 +1,34 @@
+# Use a base image with Python and any system dependencies required for Ollama
+FROM python:3.10-slim AS base
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install dependencies for your app
+COPY requirements_rag.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Install Ollama server binaries (replace <OLLAMA_URL> with actual link if needed)
+RUN curl -fsSL https://ollama.com/install.sh | sh
+
+# Expose the ports used by Ollama and your app
+EXPOSE 11434 8000
+
+# Copy your app code
+WORKDIR /app
+COPY ./rag /app/rag
+COPY ./resources /app/resources
+
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+ENV PYTHONPATH=/app
+
+# Set the entrypoint script
+ENTRYPOINT ["/app/entrypoint.sh"]
