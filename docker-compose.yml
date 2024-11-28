@@ -120,13 +120,14 @@ services:
     environment:
       # API_URL: "http://127.0.0.1:8000"
       API_URL: "http://api:8000"
-      DOCUMENT_LOCATION: app/resources/files
+      DOCUMENT_LOCATION: /app/resources/files
       MONGO_HOST: mongodb
       MONGO_DB_NAME: test_nosql
       MONGO_PORT: 27017
       MONGO_USER: mongoadmin
       MONGO_PASS: secret
       OLLAMA_SERVER_URL: "http://ollama:11434"
+      #HUGGINGFACE_SERVER: "http://ollama:11434"
     networks:
       rag_network:
         aliases:
@@ -169,6 +170,24 @@ services:
       rag_network:
         aliases:
           - email
+
+  ragchar:
+    depends_on:
+      - database
+      - mongodb
+      - ollama
+    build:
+      context: .
+      dockerfile: Dockerfile_ragchar
+    container_name: ragchar
+    #stdin_open: true
+    #tty: true
+    command: ["python", "-c", "while True: pass"]
+    volumes:
+      - ./ragchar:/app/ragchar  # Montar tu aplicación local en el contenedor
+    networks:
+      - rag_network
+
 
 volumes:
   ollama:

@@ -56,6 +56,7 @@ class MessageProcessor:
 
                 # Process the input and generate the output
                 output = response['result'] # self.process_input(message_data.input)
+                logging.info(f"RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRespuesta: {output}")
 
                 # TODO move this to a function or class
                 # Update the MongoDB document with the new output value

@@ -1,0 +1,20 @@
+# Usa una imagen base de Python con la versión necesaria
+FROM python:3.11
+
+# Establece el directorio de trabajo dentro del contenedor
+WORKDIR /app
+
+# Copia los archivos necesarios al contenedor
+COPY ./ragchar /app/ragchar
+COPY ./resources /app/resources
+
+# Instala las dependencias del script
+#RUN pip install llama-index nltk transformers sentence-transformers
+RUN pip install llama-index-core llama-index-readers-file 
+RUN pip install llama-index-llms-ollama llama-index-embeddings-huggingface
+
+# Descarga los recursos de nltk requeridos
+RUN python -m nltk.downloader punkt
+
+# Define el comando de inicio del contenedor
+CMD ["python", "ragchar/rag_main_01.py"]
