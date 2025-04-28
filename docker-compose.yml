@@ -13,6 +13,8 @@ services:
       rag_network:
         aliases:
           - database
+    volumes:
+      - mysql_data:/var/lib/mysql
 
   mongodb:
     image: mongo:latest
@@ -26,6 +28,13 @@ services:
       rag_network:
         aliases:
           - mongodb
+    volumes:
+      - mongodb_data:/data/db
+
+
+
+
+
 #
 #  ollama:
 #    build:
@@ -137,12 +146,16 @@ services:
       MONGO_PORT: 27017
       MONGO_USER: mongoadmin
       MONGO_PASS: secret
-      SMTP_SERVER: "smtp.zoho.com"
+      #SMTP_SERVER: "smtp.zoho.com"
+      SMTP_SERVER: "smtp-doc.fceia.unr.edu.ar"
       SMTP_PORT: 465
-      SMTP_USERNAME: "tambo2022@zohomail.com"
-      IMAP_SERVER: "imap.zoho.com"
+      #SMTP_USERNAME: "tambo2022@zohomail.com"
+      SMTP_USERNAME: "iadyce1"
+      #IMAP_SERVER: "imap.zoho.com"
+      IMAP_SERVER: "imap-doc.fceia.unr.edu.ar"
       IMAP_PORT: 993
-      IMAP_USERNAME: "tambo2022@zohomail.com"
+      #IMAP_USERNAME: "tambo2022@zohomail.com"
+      IMAP_USERNAME: "iadyce1"
       EMAIL_REST_SEC: 30
       LOGO_PATH: "./resources/img/logo.png"
       EMAIL_TMPT_PATH: "./resources/email_template/email_template.txt"
@@ -153,7 +166,10 @@ services:
 
 volumes:
   ollama:
+  mysql_data:
+  mongodb_data:
 
 networks:
   rag_network:
     name: rag_network
+

@@ -19,3 +19,5 @@ gunicorn
 cryptography
 mysql-connector-python
 pymongo
+email_validator
+python-multipart
