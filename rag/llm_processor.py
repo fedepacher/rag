@@ -12,12 +12,28 @@ from langchain.prompts import PromptTemplate
 from chromadb.config import Settings
 from typing import List, Union
 
+# Import transformers for tokenizer
+try:
+    from transformers import AutoTokenizer
+    TRANSFORMERS_AVAILABLE = True
+except ImportError:
+    logging.warning("transformers library not installed; token counting disabled")
+    TRANSFORMERS_AVAILABLE = False
+
 
 class BaseLLMProcessor:
     def __init__(self, llm, embedding, context_length):
         self.llm = llm
         self.embedding = embedding
         self.context_length = context_length
+        self.tokenizer = None
+        if TRANSFORMERS_AVAILABLE:
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained("mistralai/Mixtral-8x7B-Instruct-v0.1")
+                logging.debug("Tokenizer initialized successfully")
+            except Exception as e:
+                logging.error(f"Failed to initialize tokenizer: {e}")
+                self.tokenizer = None
 
     def answer_json_parser(self, str_obj: str) -> list:
         pass
@@ -26,10 +42,16 @@ class BaseLLMProcessor:
         pass
 
     def process_questionnaire(self, question: str, file_data: Document) -> str | None:
-        context = file_data.get_chunked_text(self.context_length)
-
+        # Use smaller chunks to avoid overwhelming the model
+        chunk_size = self.context_length // 2  # E.g., 16,000 tokens
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=200,
+            length_function=lambda text: len(self.tokenizer.encode(text)) if self.tokenizer else len(text.split())
+        )
+        context = text_splitter.split_text(file_data.text)
+        logging.debug(f"Split document into {len(context)} chunks, max length: {max(len(c) for c in context)}")
         answer = self.ask_question(question, context)
-
         return answer
 
 
@@ -106,18 +128,18 @@ class LLMProcessorOpenAI(BaseLLMProcessor):
             # Define the prompt template
             template = """Eres un asistente que responde preguntas basadas únicamente en el documento proporcionado. No uses conocimientos externos. Si la respuesta no está en el documento, di: "No sé la respuesta basada en la información proporcionada."
 
-             [DOCUMENTO: {context}]
-        
-             Pregunta: {question}
-             Respuesta:
-            """
+                    [DOCUMENTO: {context}]
+
+                    Pregunta: {question}
+                    Respuesta:
+                    """
             qa_chain_prompt = PromptTemplate.from_template(template)
             logging.debug("Prompt template created")
 
             # Set up the RetrievalQA chain with limited context
             max_tokens = 30000  # Leave room for question and response
             retriever = vectorstore.as_retriever(
-                search_kwargs={"k": 2}  # Limit to 2 chunks to stay within token limit
+                search_kwargs={"k": 2}  # Limit to 2 chunks
             )
             qachain = RetrievalQA.from_chain_type(
                 self.llm,
@@ -131,12 +153,18 @@ class LLMProcessorOpenAI(BaseLLMProcessor):
             retrieved_docs = retriever.get_relevant_documents(question)
             context_text = " ".join(doc.page_content for doc in retrieved_docs)
             prompt_text = qa_chain_prompt.format(context=context_text, question=question)
-            token_count = len(self.tokenizer.encode(prompt_text))
-            logging.debug(f"Prompt token count: {token_count}")
-            if token_count > max_tokens:
-                logging.warning(f"Prompt exceeds {max_tokens} tokens, truncating context")
-                context_text = context_text[:self.context_length // 2]
-                prompt_text = qa_chain_prompt.format(context=context_text, question=question)
+            token_count = None
+            if self.tokenizer:
+                token_count = len(self.tokenizer.encode(prompt_text))
+                logging.debug(f"Prompt token count: {token_count}")
+                if token_count > max_tokens:
+                    logging.warning(f"Prompt exceeds {max_tokens} tokens, truncating context")
+                    context_text = context_text[:self.context_length // 2]
+                    prompt_text = qa_chain_prompt.format(context=context_text, question=question)
+                    token_count = len(self.tokenizer.encode(prompt_text))
+                    logging.debug(f"Truncated prompt token count: {token_count}")
+            else:
+                logging.debug("Token counting skipped; tokenizer unavailable")
 
             # Query the LLM
             logging.info(f"Querying LLM for question: {question}")

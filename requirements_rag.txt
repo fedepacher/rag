@@ -12,3 +12,4 @@ gpt4all
 langchain-ollama
 langchain-openai
 sentence-transformers
+transformers
