@@ -104,29 +104,46 @@ class LLMProcessorOpenAI(BaseLLMProcessor):
                     raise
 
             # Define the prompt template
-            template = """Eres un asistente que debe responder preguntas basadas únicamente en la información proporcionada en el siguiente documento. No inventes respuestas ni utilices conocimientos externos. Si la respuesta no se encuentra en el documento, simplemente responde: "No sé la respuesta basada en la información proporcionada."
+            template = """Eres un asistente que responde preguntas basadas únicamente en el documento proporcionado. No uses conocimientos externos. Si la respuesta no está en el documento, di: "No sé la respuesta basada en la información proporcionada."
 
-            [DOCUMENTO: {context}]
-
-            Pregunta: {question}
-            Respuesta:
+             [DOCUMENTO: {context}]
+        
+             Pregunta: {question}
+             Respuesta:
             """
             qa_chain_prompt = PromptTemplate.from_template(template)
             logging.debug("Prompt template created")
 
-            # Set up the RetrievalQA chain
+            # Set up the RetrievalQA chain with limited context
+            max_tokens = 30000  # Leave room for question and response
+            retriever = vectorstore.as_retriever(
+                search_kwargs={"k": 2}  # Limit to 2 chunks to stay within token limit
+            )
             qachain = RetrievalQA.from_chain_type(
                 self.llm,
-                retriever=vectorstore.as_retriever(),
-                return_source_documents=False,
+                retriever=retriever,
+                return_source_documents=True,
                 chain_type_kwargs={"prompt": qa_chain_prompt}
             )
             logging.debug("RetrievalQA chain initialized")
+
+            # Estimate prompt token count
+            retrieved_docs = retriever.get_relevant_documents(question)
+            context_text = " ".join(doc.page_content for doc in retrieved_docs)
+            prompt_text = qa_chain_prompt.format(context=context_text, question=question)
+            token_count = len(self.tokenizer.encode(prompt_text))
+            logging.debug(f"Prompt token count: {token_count}")
+            if token_count > max_tokens:
+                logging.warning(f"Prompt exceeds {max_tokens} tokens, truncating context")
+                context_text = context_text[:self.context_length // 2]
+                prompt_text = qa_chain_prompt.format(context=context_text, question=question)
 
             # Query the LLM
             logging.info(f"Querying LLM for question: {question}")
             llm_response = qachain({"query": question})
             logging.debug(f"LLM response: {llm_response}")
+            logging.debug(
+                f"Retrieved documents: {[doc.page_content[:100] for doc in llm_response.get('source_documents', [])]}")
 
             # Extract the answer
             answer = llm_response.get("result", "") if isinstance(llm_response, dict) else str(llm_response)
