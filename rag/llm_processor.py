@@ -40,7 +40,7 @@ class LLMProcessorOpenAI(BaseLLMProcessor):
 
     def ask_question(self, question: str, context: List[str]) -> Union[str, dict]:
         """
-        Answer a question using a Mistral model based on provided context.
+        Answer a question using a language model based on provided context.
 
         Creates a Chroma vector store from the context, retrieves relevant chunks,
         and generates an answer using a RetrievalQA chain. Answers are based solely
@@ -54,21 +54,25 @@ class LLMProcessorOpenAI(BaseLLMProcessor):
             Union[str, dict]: The answer as a string or the full LLM response dict
                              (depending on RetrievalQA output). Returns an empty
                              string if an error occurs.
-
-        Raises:
-            None: Errors are caught, logged, and an empty string is returned.
         """
         try:
             logging.info(f"Processing question: {question}")
             logging.debug(f"Received {len(context)} context chunks")
 
-            # Configure Chroma to use an in-memory store or a specific database path
+            # Input validation
+            if not isinstance(question, str) or not question.strip():
+                logging.error("Question must be a non-empty string")
+                return ""
+            if not isinstance(context, list) or not all(isinstance(c, str) for c in context):
+                logging.error("Context must be a list of strings")
+                return ""
+
+            # Configure Chroma
             chroma_settings = Settings(
-                persist_directory="./chroma_db",  # Specify a directory for persistence
+                persist_directory="./chroma_db",
                 anonymized_telemetry=False
             )
             try:
-                # Initialize Chroma with persistence and ensure database is accessible
                 vectorstore = Chroma.from_texts(
                     texts=context,
                     embedding=self.embedding,
@@ -76,19 +80,16 @@ class LLMProcessorOpenAI(BaseLLMProcessor):
                     client_settings=chroma_settings
                 )
                 logging.debug("Chroma vector store created successfully")
-                vectorstore.persist()  # Ensure data is saved if using persistence
+                vectorstore.persist()
             except sqlite3.OperationalError as sql_err:
                 logging.error(f"SQLite database error: {sql_err}")
-                # Attempt to recreate the database if the tenants table is missing
                 if "no such table: tenants" in str(sql_err):
                     logging.warning("Attempting to recreate Chroma database")
                     try:
-                        # Remove existing database file (if it exists)
                         db_path = os.path.join(chroma_settings.persist_directory, "chroma.sqlite3")
                         if os.path.exists(db_path):
                             os.remove(db_path)
                             logging.info(f"Removed corrupted database file: {db_path}")
-                        # Recreate vector store
                         vectorstore = Chroma.from_texts(
                             texts=context,
                             embedding=self.embedding,
@@ -101,7 +102,7 @@ class LLMProcessorOpenAI(BaseLLMProcessor):
                         logging.error(f"Failed to recreate Chroma database: {recreate_err}")
                         return ""
                 else:
-                    raise  # Re-raise other SQLite errors
+                    raise
 
             # Define the prompt template
             template = """Eres un asistente que debe responder preguntas basadas únicamente en la información proporcionada en el siguiente documento. No inventes respuestas ni utilices conocimientos externos. Si la respuesta no se encuentra en el documento, simplemente responde: "No sé la respuesta basada en la información proporcionada."
@@ -128,7 +129,9 @@ class LLMProcessorOpenAI(BaseLLMProcessor):
             llm_response = qachain({"query": question})
             logging.debug(f"LLM response: {llm_response}")
 
-            return llm_response
+            # Extract the answer
+            answer = llm_response.get("result", "") if isinstance(llm_response, dict) else str(llm_response)
+            return answer
 
         except Exception as err:
             logging.error(f"Error processing question '{question}': {err}", exc_info=True)
