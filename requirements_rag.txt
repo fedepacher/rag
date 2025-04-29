@@ -10,3 +10,4 @@ python-docx
 chromadb
 gpt4all
 langchain-ollama
+langchain-openai

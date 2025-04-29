@@ -6,7 +6,7 @@ import sqlite3
 
 from document_loader import Document
 os.environ['ANONYMIZED_TELEMETRY'] = 'False' # Chroma spyware
-from langchain.vectorstores import Chroma
+from langchain_community.vectorstores import Chroma
 from langchain.chains import RetrievalQA, LLMChain
 from langchain.prompts import PromptTemplate
 from chromadb import Chroma
