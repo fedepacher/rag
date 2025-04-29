@@ -9,7 +9,6 @@ os.environ['ANONYMIZED_TELEMETRY'] = 'False' # Chroma spyware
 from langchain_community.vectorstores import Chroma
 from langchain.chains import RetrievalQA, LLMChain
 from langchain.prompts import PromptTemplate
-from chromadb import Chroma
 from chromadb.config import Settings
 from typing import List, Union
 
