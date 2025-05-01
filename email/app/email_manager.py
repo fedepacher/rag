@@ -38,6 +38,7 @@ class EmailManager:
         self.imap_username = config.imap_username
         
         self.email_rest_sec = config.email_rest_sec
+        self.email_sbjt_code = config.email_sbjt_code
 
         self.logo_path = config.logo_path
         self.email_tmpt_path = config.email_tmpt_path

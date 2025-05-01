@@ -30,6 +30,7 @@ class Config:
             # self.imap_password = os.getenv("IMAP_PASSWORD")
 
             self.email_rest_sec = os.getenv("EMAIL_REST_SEC")
+            self.email_sbjt_code = os.getenv("EMAIL_SBJT_CODE")
 
             self.logo_path = os.getenv("LOGO_PATH")
             self.email_tmpt_path = os.getenv("EMAIL_TMPT_PATH")

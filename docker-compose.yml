@@ -130,6 +130,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile_email
+    #command: ["python", "-c", "while True: pass"]   # solo para probar
     depends_on:
       - database
       - mongodb
@@ -157,6 +158,7 @@ services:
       #IMAP_USERNAME: "tambo2022@zohomail.com"
       IMAP_USERNAME: "iadyce1"
       EMAIL_REST_SEC: 30
+      EMAIL_SBJT_CODE: "iadyce1_code"   #codigo en el asunto del email para que el mismo sea aceptado para responder
       LOGO_PATH: "./resources/img/logo.png"
       EMAIL_TMPT_PATH: "./resources/email_template/email_template.txt"
     networks:

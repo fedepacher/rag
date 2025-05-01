@@ -28,8 +28,10 @@ def main():
         for email_dict in unread_emails:
             prompt = email_dict['body']
             email = email_dict['from']
-            prompt_to_input = Prompt(input=prompt, email=email)
-            input_prompt(prompt_to_input)
+            subject = email_dict['subject']
+            if subject == e_manager.email_sbjt_code:    # solo los emails con el asunto correcto se guardan
+                prompt_to_input = Prompt(input=prompt, email=email)
+                input_prompt(prompt_to_input)
 
         # loop: buscando desde la db para enviar
         is_a_doc_to_send = True
