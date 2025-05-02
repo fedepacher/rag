@@ -13,3 +13,4 @@ langchain-ollama
 langchain-openai
 sentence-transformers
 transformers
+faiss-cpu

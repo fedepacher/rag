@@ -9,7 +9,8 @@ from langchain_community.llms import OpenLLM
 
 from rag.message_clients import APIClient, MessageClient
 from rag.document_loader import LocalDocumentLoader
-from llm_processor import BaseLLMProcessor, LLMProcessorOpenAI, LLMProcessorOpenLLM, LLMProcessorHuggingFace
+from llm_processor import (BaseLLMProcessor, LLMProcessorOllama, LLMProcessorOpenLLM, LLMProcessorHuggingFace,
+                           LLMProcessorOpenAI)
 
 
 RESTART_AFTER_EXCEPTION_DELAY_SEC = 60
@@ -46,7 +47,7 @@ class MessageProcessor:
 
                 start_time = time.time()
 
-                logging.info(f"Getting answers based on question")
+                logging.info("Getting answers based on question")
                 response = self.llm.process_questionnaire(message.input, file_data)
 
                 end_time = time.time()
@@ -55,7 +56,7 @@ class MessageProcessor:
                 logging.info(f"Execution time of LLM: {execution_time/60} minutes")
 
                 # Process the input and generate the output
-                output = response['result'] # self.process_input(message_data.input)
+                output = response # self.process_input(message_data.input)
 
                 # TODO move this to a function or class
                 # Update the MongoDB document with the new output value
@@ -109,19 +110,15 @@ def main(api_url, document_location, mongo_host, mongo_port, mongo_user, mongo_p
         logging.debug("LLM source set to: Ollama")
         # Local LLM hosted with Ollama
         from langchain.llms import Ollama
-        from langchain_community.embeddings import HuggingFaceEmbeddings
-
-        # Configure Ollama LLM (Mistral model)
-        llm = Ollama(
-            model="mistral",
+        from langchain.embeddings import GPT4AllEmbeddings
+        llm = Ollama(model="mistral",
             base_url="http://localhost:11434",
             temperature=0.7,
-            top_p=0.9,  # Use valid parameters
-            num_ctx=32000  # Match model context window
-        )
-        embedding = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
-        context_length = 32000  # Chunk size for Document.get_chunked_text
-        llm_processor = LLMProcessorOpenAI(llm, embedding, context_length)
+            top_p=0.9,
+            num_ctx=32000)
+        context_length = 32000
+        embedding = GPT4AllEmbeddings()
+        llm_processor = LLMProcessorOllama(llm, embedding, context_length)
         assert requests.get(url=ollama_server_url).ok, "Ollama is not running"
 
     message_processor = MessageProcessor(api_client, document_loader, mongo_collection, llm_processor)
