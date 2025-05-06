@@ -116,8 +116,8 @@ def main(api_url, document_location, mongo_host, mongo_port, mongo_user, mongo_p
         logging.debug("LLM source set to: Ollama")
         # Local LLM hosted with Ollama
         from langchain.llms import Ollama
-        # from langchain.embeddings import GPT4AllEmbeddings
-        from langchain.embeddings import OllamaEmbeddings
+        from langchain.embeddings import GPT4AllEmbeddings
+        # from langchain.embeddings import OllamaEmbeddings
         model = "mistral"
         host = "http://localhost:11434"
         llm = Ollama(model=model,
@@ -126,11 +126,11 @@ def main(api_url, document_location, mongo_host, mongo_port, mongo_user, mongo_p
             top_p=0.9,
             num_ctx=6000)
         context_length = 5000
-        embedding = OllamaEmbeddings(
-            model=model,
-            base_url=host
-        )
-        # embedding = GPT4AllEmbeddings()
+        # embedding = OllamaEmbeddings(
+        #     model=model,
+        #     base_url=host
+        # )
+        embedding = GPT4AllEmbeddings()
         llm_processor = LLMProcessorOllama(llm, embedding, context_length)
         assert requests.get(url=ollama_server_url).ok, "Ollama is not running"
 
