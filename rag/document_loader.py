@@ -5,7 +5,6 @@ from typing import List
 import PyPDF2
 from langchain.text_splitter import TokenTextSplitter
 from docx import Document as Docx
-from message_clients import MessageData
 
 
 class Document:

@@ -2,6 +2,7 @@ import os
 import logging
 import time
 import requests
+from datetime import datetime
 from pymongo import MongoClient
 from bson import ObjectId
 from langchain.chat_models import ChatOpenAI
@@ -62,7 +63,12 @@ class MessageProcessor:
                 # Update the MongoDB document with the new output value
                 self.mongo_collection.update_one(
                     {"_id": ObjectId(message.id)},
-                    {"$set": {"output": output}}
+                    {
+                        "$set": {
+                            "output": output,
+                            "date_out": datetime.now()
+                        }
+                    }
                 )
                 logging.info(f"Message {message.id} updated with output: {output}")
 

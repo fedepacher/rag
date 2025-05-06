@@ -41,9 +41,9 @@ async def get_prompts():
     Returns:
         list: List of all the prompt without answer.
     """
-    # Query for documents where output is None and sort by date
+    # Query for documents where output is None and sort by date_in
     try:
-        document = mongo_collection.find_one({'output': None}, sort=[("date", ASCENDING)])
+        document = mongo_collection.find_one({'output': None}, sort=[("date_in", ASCENDING)])
         if document:
             serialized_prompt = serialize_mongo_document(document)
             return serialized_prompt
