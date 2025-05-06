@@ -113,10 +113,10 @@ def main(api_url, document_location, mongo_host, mongo_port, mongo_user, mongo_p
         from langchain.embeddings import GPT4AllEmbeddings
         llm = Ollama(model="mistral",
             base_url="http://localhost:11434",
-            temperature=0.7,
+            temperature=0.1,
             top_p=0.9,
-            num_ctx=32000)
-        context_length = 32000
+            num_ctx=6000)
+        context_length = 5000
         embedding = GPT4AllEmbeddings()
         llm_processor = LLMProcessorOllama(llm, embedding, context_length)
         assert requests.get(url=ollama_server_url).ok, "Ollama is not running"
