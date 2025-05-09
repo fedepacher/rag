@@ -29,9 +29,10 @@ def main():
             prompt = email_dict['body']
             email = email_dict['from']
             subject = email_dict['subject']
-            if subject == e_manager.email_sbjt_code:    # solo los emails con el asunto correcto se guardan
+            if e_manager.email_sbjt_code.lower() in subject.strip().lower():    # solo los emails con que en el asunto tienen el codico correcto ( el cual se limpian espacios y se pasa a minuscula el ausnto)
                 prompt_to_input = Prompt(input=prompt, email=email)
                 input_prompt(prompt_to_input)
+                logger.info(f"Saved email: from: {email} - body: {prompt[:30]}...")
 
         # loop: buscando desde la db para enviar
         is_a_doc_to_send = True
