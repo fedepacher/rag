@@ -271,7 +271,7 @@ Y podremos inspeccionar el contenido de dicha base de datos con el siguiente com
 
 ```
 db.prompts.find().toArray()
-```
+````
 
 ## Acceso a la API via la interfaz Swagger UI
 

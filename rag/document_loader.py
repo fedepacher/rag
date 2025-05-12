@@ -5,7 +5,6 @@ from typing import List
 import PyPDF2
 from langchain.text_splitter import TokenTextSplitter
 from docx import Document as Docx
-from message_clients import MessageData
 
 
 class Document:
@@ -45,7 +44,7 @@ class Document:
         return full_content
 
     def chunk_text(self, text, context_length):
-        text_splitter = TokenTextSplitter(encoding_name="cl100k_base", chunk_size=context_length, chunk_overlap=1000)
+        text_splitter = TokenTextSplitter(encoding_name="cl100k_base", chunk_size=context_length, chunk_overlap=200)
         chunked_text = text_splitter.split_text(text)
         return chunked_text
 

@@ -12,18 +12,20 @@ MESSAGE_FAILURE_SLEEP_SEC = 15
 
 
 class MessageData:
-    def __init__(self, id: str, input: str, date: datetime, output: str, email: str, status: str):
+    def __init__(self, id: str, input: str, date_in: datetime, output: str, email: str, status: str,
+                 date_out: datetime):
         self.id = id
         self.input = input
-        self.date = date
+        self.date_in = date_in
         self.output = output
         self.email = email
         self.status = status
+        self.date_out = date_out
 
     @property
     def json(self):
-        return json.dumps({'id': self.id, 'input': self.input, 'date': self.date, 'output': self.output,
-                           'email': self.email, 'status': self.status})
+        return json.dumps({'id': self.id, 'input': self.input, 'date_in': self.date_in, 'output': self.output,
+                           'email': self.email, 'status': self.status, 'date_out': self.date_out})
 
     def __str__(self):
         return str(self.json)
@@ -68,16 +70,16 @@ class APIClient(MessageClient):
             if response.status_code == 204:
                 logging.info(f"Currently no jobs to process, sleeping for {EMPTY_QUEUE_INTERVAL_SEC} seconds...")
                 time.sleep(EMPTY_QUEUE_INTERVAL_SEC)
-                continue
             elif response.ok:
                 message = response.json()
                 message_data = MessageData(
                     id=message['_id'],
                     input=message['input'],
-                    date=message['date'],
+                    date_in=message['date_in'],
                     output=message['output'],
                     email=message['email'],
-                    status=message['status']
+                    status=message['status'],
+                    date_out=message['date_out']
                 )
                 yield message_data
             else:
