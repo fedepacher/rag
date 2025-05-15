@@ -27,11 +27,10 @@ class BaseLLMProcessor:
     def answer_json_parser(self, str_obj: str) -> list:
         pass
 
-    def ask_question(self, question: str, context):
+    def ask_question(self, question: str, context: List[str]):
         pass
 
-    def process_questionnaire(self, question: str, file_data: Document) -> str | None:
-        context = file_data.get_chunked_text(self.context_length)
+    def process_questionnaire(self, question: str, context: List[str]) -> str | None:
         answer = self.ask_question(question, context)
         return answer
 

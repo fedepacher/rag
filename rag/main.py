@@ -27,9 +27,10 @@ class MessageProcessor:
     def run(self):
         logging.info("Start processing messages")
         # Load the document
-        logging.debug(f"Loading files document")
+        logging.debug("Loading files document")
         try:
             file_data = self.document_loader.load_document()
+            context_chunked = file_data.get_chunked_text(self.llm.context_length)
         except Exception as e:
             logging.error(f"No document in folder resources/files: {e}")
             time.sleep(1)
@@ -37,19 +38,11 @@ class MessageProcessor:
         try:
             for i, message in enumerate(self.api.messages()):
                 logging.info(f"{message.input}: Processing prompt...")
-                # Load the document
-                # logging.debug(f"Loading file from document: {message.context}")
-                # try:
-                #     file_data = self.document_loader.load_document(message)
-                # except Exception as e:
-                #     logging.info(f"{message.document_id}: No document in the S3 storage: {e}")
-                #     time.sleep(1)
-                #     raise e
 
                 start_time = time.time()
 
                 logging.info("Getting answers based on question")
-                response = self.llm.process_questionnaire(message.input, file_data)
+                response = self.llm.process_questionnaire(message.input, context_chunked)
 
                 end_time = time.time()
 
