@@ -17,6 +17,71 @@ from llm_processor import (BaseLLMProcessor, LLMProcessorOllama, LLMProcessorOpe
 RESTART_AFTER_EXCEPTION_DELAY_SEC = 60
 
 
+
+
+from llama_index.core import VectorStoreIndex, SimpleDirectoryReader, Settings
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index.llms.ollama import Ollama
+from datetime import datetime
+import nltk
+from nltk.tokenize import sent_tokenize
+from llama_index.core import Document
+
+# para ver el funcionamiento del RAG
+# import logging
+# import sys
+# logging.basicConfig(stream=sys.stdout, level=logging.INFO)
+
+# Descargar los recursos necesarios de nltk.
+#nltk.download('punkt')
+nltk.download('punkt_tab')
+
+def chunk_text(text, chunk_size=4000):
+    # Divide el texto en oraciones  
+    sentences = sent_tokenize(text)
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) > chunk_size:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence
+        else:
+            current_chunk += " " + sentence
+    
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    return chunks
+
+def chunk_documents(documents):
+    chunked_documents = []
+    for doc in documents:
+        # Acceder al texto de Document con doc.text
+        chunks = chunk_text(doc.text)
+        for chunk in chunks:
+            # Crear objetos Document en lugar de diccionarios
+            chunked_documents.append(Document(text=chunk))
+    return chunked_documents
+
+# Cargar documentos
+documents = SimpleDirectoryReader("/app/resources/files").load_data()
+
+# Aplicar chunking
+chunked_documents = chunk_documents(documents)
+
+# bge-base embedding model
+Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-base-en-v1.5")
+
+# ollama
+Settings.llm = Ollama(base_url="http://localhost:11434", model="mistral", request_timeout=1000.0)
+
+# Crear índice con los objetos Document
+index = VectorStoreIndex.from_documents(chunked_documents)
+
+query_engine = index.as_query_engine(similarity_top_k=5)    # "top_k" documents
+#query_engine = index.as_query_engine()    # "top_k" documents
+
 class MessageProcessor:
     def __init__(self, api: MessageClient, document_loader, mongo_collection, llm: BaseLLMProcessor):
         self.api = api
@@ -27,13 +92,13 @@ class MessageProcessor:
     def run(self):
         logging.info("Start processing messages")
         # Load the document
-        logging.debug(f"Loading files document")
-        try:
-            file_data = self.document_loader.load_document()
-        except Exception as e:
-            logging.error(f"No document in folder resources/files: {e}")
-            time.sleep(1)
-            raise e
+        # logging.debug(f"Loading files document")
+        # try:
+        #     file_data = self.document_loader.load_document()
+        # except Exception as e:
+        #     logging.error(f"No document in folder resources/files: {e}")
+        #     time.sleep(1)
+        #     raise e
         try:
             for i, message in enumerate(self.api.messages()):
                 logging.info(f"{message.input}: Processing prompt...")
@@ -49,7 +114,19 @@ class MessageProcessor:
                 start_time = time.time()
 
                 logging.info("Getting answers based on question")
-                response = self.llm.process_questionnaire(message.input, file_data)
+                #response = self.llm.process_questionnaire(message.input, file_data)
+                logging.info(f"type message.input: {type(message.input)} // message.input: {message.input}")
+                prompt = f"""Eres un asistente que debe responder preguntas basadas únicamente en la información proporcionada en el contexto pasado. No inventes respuestas ni utilices conocimientos externos, pero si intenta buscar, inferir o deducir la respuesta a partir de la información en el contexto. Si la respuesta no puede obtenerse de esa forma, simplemente responde: "No sé la respuesta basada en la información proporcionada."
+                Pregunta: {message.input}
+                """
+                response = query_engine.query(prompt)
+
+                print("\n\n--- Documentos usados como contexto ---")
+                for node in response.source_nodes:
+                    print(f"Score: {node.score}")
+                    print(f"{node.node.get_content()[:2000]}\n")  # Mostramos primeros 500 caracteres
+
+
 
                 end_time = time.time()
 
@@ -57,7 +134,8 @@ class MessageProcessor:
                 logging.info(f"Execution time of LLM: {execution_time/60} minutes")
 
                 # Process the input and generate the output
-                output = response # self.process_input(message_data.input)
+                output = response.response # self.process_input(message_data.input)
+                logging.info(f"\n\n---------------------------------------\ntype output: {type(output)}\n-------------------\noutput: {output}")
 
                 # TODO move this to a function or class
                 # Update the MongoDB document with the new output value

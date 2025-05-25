@@ -14,6 +14,11 @@ RUN apt-get update && apt-get install -y \
 COPY requirements_rag.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
+RUN pip install llama-index-core llama-index-readers-file 
+RUN pip install llama-index-llms-ollama llama-index-embeddings-huggingface
+# Descarga los recursos de nltk requeridos
+RUN python -m nltk.downloader punkt
+
 # Install Ollama server binaries (replace <OLLAMA_URL> with actual link if needed)
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
