@@ -31,6 +31,8 @@ class MessageProcessor:
         try:
             file_data = self.document_loader.load_document()
             context_chunked = file_data.get_chunked_text(self.llm.context_length)
+            # Build/load FAISS index once
+            self.llm.build_or_load_vectorstore(context_chunked)
         except Exception as e:
             logging.error(f"No document in folder resources/files: {e}")
             time.sleep(1)
@@ -115,7 +117,7 @@ def main(api_url, document_location, mongo_host, mongo_port, mongo_user, mongo_p
         host = "http://localhost:11434"
         llm = Ollama(model=model,
             base_url=host,
-            temperature=0.1,
+            temperature=0.0,
             top_p=0.9,
             num_ctx=6000)
         context_length = 5000

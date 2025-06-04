@@ -1,22 +1,30 @@
 import logging
 import os
 import requests
+import hashlib
+import shutil
 from typing import List
 
 os.environ['ANONYMIZED_TELEMETRY'] = 'False'  # Chroma spyware
 from langchain_community.vectorstores import Chroma, FAISS
 from langchain.chains import RetrievalQA, LLMChain
 from langchain.prompts import PromptTemplate
-from document_loader import Document
 
 
-INITIAL_PROMPT = """Eres un asistente que debe responder preguntas basadas únicamente en la información proporcionada en el siguiente documento. No inventes respuestas ni utilices conocimientos externos. Si la respuesta no se encuentra en el documento, simplemente responde: "No sé la respuesta basada en la información proporcionada."
+FAISS_INDEX_PATH = "resources/faiss_index"
+DOC_HASH_PATH = os.path.join(FAISS_INDEX_PATH, "doc_hash.txt")
+INITIAL_PROMPT = """
+Eres un asistente experto que solo puede responder preguntas utilizando **únicamente** la información contenida en el documento a continuación. 
+No debes usar conocimientos previos, hacer suposiciones, inferencias externas ni inventar respuestas. 
+Si la información no está presente explícitamente en el documento, responde únicamente: 
+**"No sé la respuesta basada en la información proporcionada."**
 
-                    [DOCUMENTO: {context}]
-    
-                    Pregunta: {question}
-                    Respuesta:
-                   """
+DOCUMENTO:
+{context}
+
+Pregunta: {question}
+Respuesta:
+"""
 
 class BaseLLMProcessor:
     def __init__(self, llm, embedding, context_length):
@@ -25,6 +33,9 @@ class BaseLLMProcessor:
         self.context_length = context_length
 
     def answer_json_parser(self, str_obj: str) -> list:
+        pass
+
+    def build_or_load_vectorstore(self, context: List[str]):
         pass
 
     def ask_question(self, question: str, context: List[str]):
@@ -38,6 +49,35 @@ class BaseLLMProcessor:
 class LLMProcessorOllama(BaseLLMProcessor):
     def __init__(self, llm, embedding, context_length):
         super().__init__(llm, embedding, context_length)
+        self.vectorstore = None
+
+    @staticmethod
+    def get_text_hash(context: list[str]) -> str:
+        joined = ''.join(context)
+        return hashlib.sha256(joined.encode('utf-8')).hexdigest()
+
+    def document_has_changed(self, context: list[str]) -> bool:
+        new_hash = self.get_text_hash(context)
+        if os.path.exists(DOC_HASH_PATH):
+            with open(DOC_HASH_PATH, 'r') as f:
+                old_hash = f.read().strip()
+            return new_hash != old_hash
+        return True
+
+    def save_hash(self, context: list[str]):
+        os.makedirs(FAISS_INDEX_PATH, exist_ok=True)
+        with open(DOC_HASH_PATH, 'w') as f:
+            f.write(self.get_text_hash(context))
+
+    def build_or_load_vectorstore(self, context: list[str]):
+        if os.path.exists(FAISS_INDEX_PATH) and not self.document_has_changed(context):
+            self.vectorstore = FAISS.load_local(FAISS_INDEX_PATH, self.embedding)
+        else:
+            if os.path.exists(FAISS_INDEX_PATH):
+                shutil.rmtree(FAISS_INDEX_PATH, ignore_errors=True)
+            self.vectorstore = FAISS.from_texts(texts=context, embedding=self.embedding)
+            self.vectorstore.save_local(FAISS_INDEX_PATH)
+            self.save_hash(context)
 
     def ask_question(self, question: str, context: List[str]) -> str:
         """
@@ -55,13 +95,10 @@ class LLMProcessorOllama(BaseLLMProcessor):
             if not question.strip():
                 logging.error("Question is empty")
                 return "Error: La pregunta no puede estar vacía."
-            if not context or not all(isinstance(c, str) for c in context):
-                logging.error("Invalid or empty context")
-                return "Error: El contexto proporcionado es inválido o está vacío."
 
-            # Create FAISS in-memory vector store
-            vectorstore = FAISS.from_texts(texts=context, embedding=self.embedding)
-            logging.debug("FAISS vector store created successfully")
+            # Build/load vectorstore if not already done
+            if self.vectorstore is None:
+                self.build_or_load_vectorstore(context)
 
             # Define prompt
             qa_chain_prompt = PromptTemplate.from_template(INITIAL_PROMPT)
@@ -69,7 +106,7 @@ class LLMProcessorOllama(BaseLLMProcessor):
             # Set up RetrievalQA chain
             qachain = RetrievalQA.from_chain_type(
                 self.llm,
-                retriever=vectorstore.as_retriever(search_kwargs={"k": 2}),
+                retriever=self.vectorstore.as_retriever(search_kwargs={"k": 2}),
                 return_source_documents=False,
                 chain_type_kwargs={"prompt": qa_chain_prompt}
             )
