@@ -30,6 +30,7 @@ the CRAG/Self-RAG work has a number to be compared against.
 >
 > No latency figure and no quality score in this repository is real until
 > `results/` contains output produced by an actual run on the target hardware.
+> **[`STATUS.md`](STATUS.md)** tracks that gap across the whole project.
 
 ## Quick path
 

@@ -18,6 +18,10 @@ the two and writes a Markdown report.
 > A third blocker is a *decision*, not a missing artifact: the "v1.0" this was
 > supposed to be compared against is not runnable code any more. See the next
 > section.
+>
+> **[`STATUS.md`](STATUS.md)** lists all of this in one place — what is
+> implemented, what needs the live box, what needs the instructors, and which
+> claims the URUCON write-up cannot support yet.
 
 ## Open methodological gap: there is no runnable "v1.0"
 
@@ -281,6 +285,7 @@ skipping the per-iteration breakdown rather than reporting it as all-zeroes.
 | `run_baseline.py` | Measures one arm | Yes — Ollama, FAISS, LangGraph |
 | `compare_runs.py` | Diffs two results files | No — standard library only |
 | `eval_io.py` | Results-file format shared by both | No |
+| `STATUS.md` | Implemented vs. measured, and who unblocks what | No |
 
 `eval_io.py` imports nothing from `rag/` on purpose. Producing a results file needs
 a 16 GB box; reading two committed ones and diffing them must not, so an instructor
