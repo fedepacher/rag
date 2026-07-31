@@ -26,9 +26,40 @@ OLLAMA_TOP_P = 0.9
 OLLAMA_NUM_CTX = 6000
 OLLAMA_CONTEXT_LENGTH = 5000
 
+# CRAG control model, pulled by entrypoint.sh alongside the generation model. Phi-3.5-mini
+# grades retrieval relevance and rewrites queries; both are classification-style jobs, so
+# temperature is 0 for determinism instead of the 0.9 top_p sampling the generator uses.
+# It stays resident next to Llama for the lifetime of the process (~3.2 GiB on top of the
+# generator's ~5.6 GiB, so ~8.5-9 GiB combined on the 16 GB target box). One instance is
+# built here and shared by every control node — never one per node.
+PHI_MODEL = "phi3.5:3.8b-mini-instruct-q4_K_M"
+PHI_TEMPERATURE = 0.0
+PHI_NUM_CTX = 6000
 
-def build_ollama_processor() -> LLMProcessorOllama:
+
+def build_phi_control_llm():
+    """Build the Phi-3.5-mini instance backing the CRAG control nodes.
+
+    Returns:
+        Ollama: LLM client pointed at the same local Ollama server as the generator.
+    """
+    from langchain.llms import Ollama
+
+    return Ollama(model=PHI_MODEL,
+                  base_url=OLLAMA_HOST,
+                  temperature=PHI_TEMPERATURE,
+                  num_ctx=PHI_NUM_CTX)
+
+
+def build_ollama_processor(enable_crag: bool = True) -> LLMProcessorOllama:
     """Build the Ollama-backed processor used by the default pipeline.
+
+    Args:
+        enable_crag (bool): Wire the Phi-3.5-mini control model in so the graph runs the
+            CRAG correction loop (relevance grading, bounded reformulation, out-of-scope
+            short-circuit). Pass False to get the classic linear retrieve -> generate
+            pipeline and to avoid loading the control model at all; that is what the
+            baseline harness measures, so the pre-CRAG reference point stays reachable.
 
     Returns:
         LLMProcessorOllama: Processor wired to the local Ollama server with
@@ -48,7 +79,8 @@ def build_ollama_processor() -> LLMProcessorOllama:
     #     base_url=OLLAMA_HOST
     # )
     embedding = GPT4AllEmbeddings()
-    return LLMProcessorOllama(llm, embedding, OLLAMA_CONTEXT_LENGTH)
+    grader_llm = build_phi_control_llm() if enable_crag else None
+    return LLMProcessorOllama(llm, embedding, OLLAMA_CONTEXT_LENGTH, grader_llm=grader_llm)
 
 
 class MessageProcessor:
@@ -143,7 +175,7 @@ def main(api_url, document_location, mongo_host, mongo_port, mongo_user, mongo_p
         llm_processor = LLMProcessorHuggingFace(huggingface_server, output_tokens)
     else:
         logging.debug("LLM source set to: Ollama")
-        # Local LLM hosted with Ollama
+        # Local LLM hosted with Ollama, with the CRAG correction loop enabled
         llm_processor = build_ollama_processor()
         assert requests.get(url=ollama_server_url).ok, "Ollama is not running"
 

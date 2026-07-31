@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import requests
 import hashlib
 import shutil
@@ -36,19 +37,107 @@ Pregunta: {question}
 Respuesta:
 """
 
+# --- CRAG (Corrective RAG) ---------------------------------------------------
+
+# The three verdicts the relevance grader can produce. Plain strings rather than an
+# Enum because they travel inside the TypedDict LangGraph carries between nodes, and
+# because the grader answers in Spanish with exactly these words.
+RELEVANCE_RELEVANT = "relevante"
+RELEVANCE_PARTIAL = "parcialmente_relevante"
+RELEVANCE_IRRELEVANT = "irrelevante"
+
+# Maximum number of iterations of the *correction loop*, i.e. of query reformulations.
+#
+# "Máximo 2 iteraciones" is genuinely ambiguous, so this is the reading we commit to:
+# the first retrieval is not an iteration of the loop, it is what the loop corrects.
+# Two iterations therefore means at most 2 reformulations, and the worst case for a
+# single question is 3 retrievals + 3 relevance grades + 2 reformulations before the
+# out-of-scope short-circuit fires. Sequence, with iteration_count starting at 0:
+#   retrieve -> grade (irrelevante, 0 < 2) -> reformulate (count=1)
+#            -> grade (irrelevante, 1 < 2) -> reformulate (count=2)
+#            -> grade (irrelevante, 2 >= 2) -> out_of_scope
+MAX_CRAG_ITERATIONS = 2
+
+# Characters of each retrieved chunk handed to the grader. Chunks are built at
+# OLLAMA_CONTEXT_LENGTH (5000 characters) and RETRIEVAL_K of them would alone overflow
+# the grader's num_ctx before the instructions are even added. Relevance can be judged
+# from the opening of a chunk, and a shorter prompt is what keeps three worst-case
+# grading calls affordable on a CPU-only box.
+GRADER_CHUNK_PREVIEW_CHARS = 1500
+
+# Upper bound on a reformulated query. A rewrite longer than this is the model
+# rambling rather than searching, and a bad query is worse than the original one.
+REFORMULATED_QUERY_MAX_CHARS = 500
+
+RELEVANCE_PROMPT = """
+Eres un evaluador de relevancia de un sistema de búsqueda documental.
+Tu única tarea es decidir si los FRAGMENTOS recuperados contienen información útil
+para responder la PREGUNTA. No respondas la pregunta ni expliques tu decisión.
+
+Responde con UNA sola palabra, exactamente una de estas tres:
+- relevante: los fragmentos alcanzan para responder la pregunta.
+- parcialmente_relevante: los fragmentos tratan el tema pero no alcanzan para responderla por completo.
+- irrelevante: los fragmentos no tienen relación con la pregunta.
+
+FRAGMENTOS:
+{context}
+
+PREGUNTA: {question}
+Clasificación:
+"""
+
+REFORMULATION_PROMPT = """
+Eres un asistente de búsqueda documental de un curso universitario de electrónica.
+La búsqueda actual no recuperó fragmentos relevantes de la bibliografía del curso.
+Reescribe la consulta para mejorar la búsqueda por similitud semántica: usa la
+terminología técnica de la materia, explicita los conceptos clave y elimina el texto
+conversacional. No respondas la pregunta.
+
+Devuelve únicamente la consulta reescrita, en una sola línea, sin comillas ni explicaciones.
+
+PREGUNTA ORIGINAL DEL ESTUDIANTE: {question}
+BÚSQUEDA ACTUAL: {search_query}
+CONSULTA REESCRITA:
+"""
+
+# Returned instead of a speculative answer once the correction loop is exhausted.
+# Deliberately does not start with "Error:", which is the prefix the pipeline reserves
+# for failures (resources/eval/run_baseline.py flags records by it): being out of scope
+# is a valid, successful outcome, not a malfunction.
+OUT_OF_SCOPE_ANSWER = (
+    "No encontré información sobre esta consulta en la bibliografía del curso. "
+    "La pregunta parece quedar fuera del alcance del material disponible, así que no "
+    "puedo responderla sin especular. Te sugiero reformularla con los términos que usa "
+    "la cátedra, o consultarla directamente con el docente."
+)
+
+
 class RAGGraphState(TypedDict):
     """State carried through the LangGraph RAG pipeline.
 
     Attributes:
-        question (str): The question being answered, unchanged across the run.
+        question (str): The student's question, verbatim and unchanged across the run.
+            Generation and relevance grading always work against this, never against a
+            machine-rewritten variant.
+        search_query (str): Query actually sent to the retriever. Starts as a copy of
+            ``question`` and is replaced by the CRAG reformulation node. Kept separate
+            from ``question`` so a rewrite improves retrieval without changing what the
+            student is answered.
         retrieved_docs (List[Document]): Chunks returned by the FAISS retriever.
-        iteration_count (int): Number of retrieval attempts made so far. Always 0
-            today; the CRAG reformulation loop is the one that will increment it.
-        answer (Optional[str]): Text produced by the generation node, None until then.
+        relevance (Optional[str]): Verdict of the CRAG grading node for the current
+            chunks, one of RELEVANCE_RELEVANT, RELEVANCE_PARTIAL or
+            RELEVANCE_IRRELEVANT. None before the first grade, and always None when the
+            processor runs without a grader model.
+        iteration_count (int): Number of query reformulations performed so far, capped
+            at MAX_CRAG_ITERATIONS.
+        answer (Optional[str]): Text produced by the generation or out-of-scope node,
+            None until then.
     """
 
     question: str
+    search_query: str
     retrieved_docs: List[Document]
+    relevance: Optional[str]
     iteration_count: int
     answer: Optional[str]
 
@@ -74,10 +163,32 @@ class BaseLLMProcessor:
 
 
 class LLMProcessorOllama(BaseLLMProcessor):
-    def __init__(self, llm, embedding, context_length):
+    """Ollama-backed processor running its pipeline as a LangGraph state graph.
+
+    The graph shape depends on whether a grader model was wired in:
+
+    * ``grader_llm=None`` -> the linear pipeline ``retrieve -> generate``. This is the
+      classic RAG behaviour the baseline harness measures, and it stays reachable on
+      purpose so the pre-CRAG reference point does not disappear.
+    * ``grader_llm`` set -> the CRAG correction loop, with relevance grading, bounded
+      query reformulation and the out-of-scope short-circuit.
+
+    Args:
+        llm: Generation model (Llama 3.1 8B in production).
+        embedding: Embedding model backing the FAISS vector store.
+        context_length: Character budget used to chunk the course documents.
+        grader_llm: Small control model (Phi-3.5-mini in production) used by the CRAG
+            nodes to grade relevance and rewrite queries. A single instance is shared
+            by both nodes; do not create one per node, both models stay resident.
+    """
+
+    def __init__(self, llm, embedding, context_length, grader_llm=None):
         super().__init__(llm, embedding, context_length)
         self.vectorstore = None
         self.qa_chain_prompt = PromptTemplate.from_template(INITIAL_PROMPT)
+        self.grader_llm = grader_llm
+        self.relevance_prompt = PromptTemplate.from_template(RELEVANCE_PROMPT)
+        self.reformulation_prompt = PromptTemplate.from_template(REFORMULATION_PROMPT)
         self.graph = None
 
     @staticmethod
@@ -109,19 +220,187 @@ class LLMProcessorOllama(BaseLLMProcessor):
             self.save_hash(context)
 
     def retrieve_node(self, state: RAGGraphState) -> Dict[str, Any]:
-        """Graph node: pull the most similar chunks for the question out of FAISS.
+        """Graph node: pull the most similar chunks for the current query out of FAISS.
+
+        Re-entered by the CRAG correction loop, in which case ``search_query`` holds the
+        reformulated query rather than the student's original wording.
+
+        Args:
+            state (RAGGraphState): Current graph state, read for its search query.
+
+        Returns:
+            Dict[str, Any]: State update carrying the retrieved documents.
+        """
+        search_query = state.get("search_query") or state["question"]
+        retriever = self.vectorstore.as_retriever(search_kwargs={"k": RETRIEVAL_K})
+        retrieved_docs = retriever.invoke(search_query)
+        logging.debug(f"Retrieved {len(retrieved_docs)} chunk(s) from FAISS (k={RETRIEVAL_K}) "
+                      f"for query: {search_query}")
+        return {"retrieved_docs": retrieved_docs}
+
+    @staticmethod
+    def parse_relevance(grader_response: Any) -> str:
+        """Map a free-form grader answer onto one of the three relevance verdicts.
+
+        Small instruct models do not reliably answer with a bare label: they prepend
+        "Clasificación:", wrap the word in markdown, or answer in a full sentence. The
+        matching is therefore keyword based, and the order matters because "irrelevante"
+        contains "relevante" as a substring and "no son relevantes" contains it too.
+
+        Args:
+            grader_response (Any): Raw value returned by the grader LLM.
+
+        Returns:
+            str: One of RELEVANCE_RELEVANT, RELEVANCE_PARTIAL or RELEVANCE_IRRELEVANT.
+            An empty or unparseable answer falls back to RELEVANCE_PARTIAL, the verdict
+            that keeps the pipeline generating: a confused grader must never be able to
+            turn a question into an out-of-scope refusal that the classic pipeline would
+            have answered.
+        """
+        text = re.sub(r"[\s_\-*`.:,;]+", " ", str(grader_response or "").lower()).strip()
+        if not text:
+            logging.warning("Relevance grader returned an empty answer; assuming partial relevance")
+            return RELEVANCE_PARTIAL
+        if "parcial" in text:
+            return RELEVANCE_PARTIAL
+        if "irrelevante" in text or re.search(r"\bno\s+(?:\w+\s+){0,3}relevante", text):
+            return RELEVANCE_IRRELEVANT
+        if "relevante" in text:
+            return RELEVANCE_RELEVANT
+        logging.warning(f"Unparseable relevance verdict '{text[:80]}'; assuming partial relevance")
+        return RELEVANCE_PARTIAL
+
+    @staticmethod
+    def sanitize_reformulated_query(llm_response: Any) -> str:
+        """Extract a usable search query from the reformulation model's answer.
+
+        Args:
+            llm_response (Any): Raw value returned by the grader LLM.
+
+        Returns:
+            str: First usable line, stripped of quoting and of the label the model
+            sometimes echoes back, capped at REFORMULATED_QUERY_MAX_CHARS. Empty string
+            when nothing usable came back, which the caller treats as "keep the previous
+            query".
+        """
+        for line in str(llm_response or "").splitlines():
+            candidate = line.strip().strip('"\'*` ')
+            candidate = re.sub(r"^(?:consulta|pregunta|b[uú]squeda)[^:]{0,30}:\s*", "", candidate,
+                               flags=re.IGNORECASE).strip()
+            if candidate:
+                return candidate[:REFORMULATED_QUERY_MAX_CHARS]
+        return ""
+
+    def grade_relevance_node(self, state: RAGGraphState) -> Dict[str, Any]:
+        """Graph node: ask the control model whether the retrieved chunks are usable.
+
+        Grades the chunks against the student's original question, not against the
+        reformulated search query: the point is whether what came back can answer what
+        was actually asked.
+
+        Args:
+            state (RAGGraphState): Current graph state, read for its question and
+                retrieved documents.
+
+        Returns:
+            Dict[str, Any]: State update carrying the relevance verdict.
+        """
+        retrieved_docs = state["retrieved_docs"]
+        if not retrieved_docs:
+            logging.warning("Relevance grading skipped: retrieval returned no chunk")
+            return {"relevance": RELEVANCE_IRRELEVANT}
+
+        context = DOCUMENT_SEPARATOR.join(document.page_content[:GRADER_CHUNK_PREVIEW_CHARS]
+                                          for document in retrieved_docs)
+        prompt = self.relevance_prompt.format(context=context, question=state["question"])
+
+        logging.debug("Waiting for the relevance grader")
+        try:
+            grader_response = self.grader_llm.invoke(prompt)
+        except Exception as err:
+            # The control model is an enhancement, not a dependency: if it is down the
+            # pipeline degrades to classic RAG instead of failing the student's question.
+            logging.error(f"Relevance grading failed, falling back to generation: {err}", exc_info=True)
+            return {"relevance": RELEVANCE_PARTIAL}
+
+        relevance = self.parse_relevance(grader_response)
+        logging.info(f"CRAG relevance verdict: {relevance} (iteration {state.get('iteration_count', 0)})")
+        return {"relevance": relevance}
+
+    def reformulate_query_node(self, state: RAGGraphState) -> Dict[str, Any]:
+        """Graph node: rewrite the search query after an irrelevant retrieval.
+
+        Increments ``iteration_count`` unconditionally, including when the rewrite
+        fails, so that the correction loop is bounded by construction and cannot spin.
+
+        Args:
+            state (RAGGraphState): Current graph state, read for its question, current
+                search query and iteration count.
+
+        Returns:
+            Dict[str, Any]: State update carrying the new query and iteration count.
+        """
+        search_query = state.get("search_query") or state["question"]
+        iteration_count = state.get("iteration_count", 0) + 1
+        prompt = self.reformulation_prompt.format(question=state["question"], search_query=search_query)
+
+        logging.debug("Waiting for the query reformulation")
+        try:
+            reformulated_query = self.sanitize_reformulated_query(self.grader_llm.invoke(prompt))
+        except Exception as err:
+            logging.error(f"Query reformulation failed: {err}", exc_info=True)
+            reformulated_query = ""
+
+        if not reformulated_query:
+            logging.warning(f"Reformulation {iteration_count}/{MAX_CRAG_ITERATIONS} produced nothing usable; "
+                            f"keeping the previous query")
+            return {"iteration_count": iteration_count}
+
+        logging.info(f"CRAG reformulation {iteration_count}/{MAX_CRAG_ITERATIONS}: "
+                     f"'{search_query}' -> '{reformulated_query}'")
+        return {"search_query": reformulated_query, "iteration_count": iteration_count}
+
+    def out_of_scope_node(self, state: RAGGraphState) -> Dict[str, Any]:
+        """Graph node: answer that the question is not covered by the bibliography.
+
+        Terminal alternative to generation. Reached only once the correction loop is
+        exhausted, so that an exhausted question gets an honest refusal instead of a
+        speculative answer built on chunks the grader already rejected.
 
         Args:
             state (RAGGraphState): Current graph state, read for its question.
 
         Returns:
-            Dict[str, Any]: State update carrying the retrieved documents.
+            Dict[str, Any]: State update carrying the out-of-scope answer.
         """
-        question = state["question"]
-        retriever = self.vectorstore.as_retriever(search_kwargs={"k": RETRIEVAL_K})
-        retrieved_docs = retriever.invoke(question)
-        logging.debug(f"Retrieved {len(retrieved_docs)} chunk(s) from FAISS (k={RETRIEVAL_K})")
-        return {"retrieved_docs": retrieved_docs}
+        logging.info(f"CRAG exhausted {MAX_CRAG_ITERATIONS} reformulation(s) without relevant context; "
+                     f"answering out of scope for: {state['question']}")
+        return {"answer": OUT_OF_SCOPE_ANSWER}
+
+    def route_after_grading(self, state: RAGGraphState) -> str:
+        """Conditional edge: pick the successor of the relevance grading node.
+
+        Only ``irrelevante`` opens the correction loop. ``parcialmente_relevante`` goes
+        straight to generation on purpose: partial relevance means the bibliography does
+        cover the topic, INITIAL_PROMPT already forces the model to answer "No sé la
+        respuesta basada en la información proporcionada." for whatever is missing, and
+        reformulating from a partial hit risks trading a usable answer for an
+        out-of-scope refusal the classic pipeline would never have produced. Each loop
+        also costs a grade, a rewrite and a retrieval on a CPU-only box, which is only
+        worth paying when the retrieved context is outright useless.
+
+        Args:
+            state (RAGGraphState): Current graph state, read for its relevance verdict
+                and iteration count.
+
+        Returns:
+            str: Name of the next node: "generate", "reformulate_query" or "out_of_scope".
+        """
+        if (state.get("relevance") or RELEVANCE_PARTIAL) != RELEVANCE_IRRELEVANT:
+            return "generate"
+        if state.get("iteration_count", 0) < MAX_CRAG_ITERATIONS:
+            return "reformulate_query"
+        return "out_of_scope"
 
     def generate_node(self, state: RAGGraphState) -> Dict[str, Any]:
         """Graph node: stuff the retrieved chunks into the prompt and call the LLM.
@@ -144,11 +423,24 @@ class LLMProcessorOllama(BaseLLMProcessor):
         return {"answer": answer}
 
     def build_graph(self):
-        """Compile the RAG state graph: START -> retrieve -> generate -> END.
+        """Compile the RAG state graph, with or without the CRAG correction loop.
 
-        The graph is intentionally linear. Conditional edges (CRAG relevance grading
-        and its reformulation loop, Self-RAG grounding verification) are added by the
-        follow-up issues; this one only replaces the former RetrievalQA chain.
+        Without a grader model the graph is the linear pipeline the LangGraph migration
+        introduced, which is what the baseline harness measures::
+
+            START -> retrieve -> generate -> END
+
+        With one, the CRAG mechanism is wired in::
+
+            START -> retrieve -> grade_relevance
+            grade_relevance -[relevante | parcialmente_relevante]-> generate -> END
+            grade_relevance -[irrelevante, iteration_count <  MAX]-> reformulate_query -> retrieve
+            grade_relevance -[irrelevante, iteration_count >= MAX]-> out_of_scope -> END
+
+        The loop is bounded by ``reformulate_query`` being the only node that increments
+        ``iteration_count``, so the longest possible walk is 3 retrievals, 3 grades and
+        2 reformulations: well inside LangGraph's default recursion limit. Self-RAG
+        grounding verification is a follow-up issue and is in neither shape.
 
         Returns:
             CompiledStateGraph: Graph ready to be invoked with a RAGGraphState.
@@ -157,8 +449,23 @@ class LLMProcessorOllama(BaseLLMProcessor):
         workflow.add_node("retrieve", self.retrieve_node)
         workflow.add_node("generate", self.generate_node)
         workflow.add_edge(START, "retrieve")
-        workflow.add_edge("retrieve", "generate")
         workflow.add_edge("generate", END)
+
+        if self.grader_llm is None:
+            workflow.add_edge("retrieve", "generate")
+            return workflow.compile()
+
+        workflow.add_node("grade_relevance", self.grade_relevance_node)
+        workflow.add_node("reformulate_query", self.reformulate_query_node)
+        workflow.add_node("out_of_scope", self.out_of_scope_node)
+        workflow.add_edge("retrieve", "grade_relevance")
+        workflow.add_conditional_edges("grade_relevance", self.route_after_grading, {
+            "generate": "generate",
+            "reformulate_query": "reformulate_query",
+            "out_of_scope": "out_of_scope"
+        })
+        workflow.add_edge("reformulate_query", "retrieve")
+        workflow.add_edge("out_of_scope", END)
         return workflow.compile()
 
     def ask_question(self, question: str, context: List[str]) -> str:
@@ -185,13 +492,17 @@ class LLMProcessorOllama(BaseLLMProcessor):
             # Compile the graph once and reuse it across questions
             if self.graph is None:
                 self.graph = self.build_graph()
-                logging.debug("LangGraph RAG state graph compiled")
+                logging.debug(f"LangGraph RAG state graph compiled "
+                              f"(CRAG {'enabled' if self.grader_llm is not None else 'disabled'})")
 
             # Run the graph
             final_state = self.graph.invoke({
                 "question": question,
+                # Retrieval starts from the student's own wording; the CRAG
+                # reformulation node is what replaces it on later iterations.
+                "search_query": question,
                 "retrieved_docs": [],
-                # Bumped by the CRAG reformulation loop once that node exists.
+                "relevance": None,
                 "iteration_count": 0,
                 "answer": None
             })

@@ -214,8 +214,8 @@ docker compose up --build
 ```
 
 Esto levantara las bases de datos MySQL y MongoDB, ademas ejecutara la API, Ollama el cual descargara los modelos
-Llama 3.1 8B (generacion) y Phi-3.5-mini (reservado para los nodos CRAG/Self-RAG, todavia no utilizado) y el
-servicio de RAG.
+Llama 3.1 8B (generacion) y Phi-3.5-mini (nodos de control CRAG: evaluacion de relevancia y reformulacion de
+consultas) y el servicio de RAG.
 
 
 ## Acceso a la base de datos MySQL

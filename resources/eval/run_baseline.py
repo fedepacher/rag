@@ -1,10 +1,18 @@
-"""Baseline latency harness for the pre-LangGraph RAG pipeline.
+"""Baseline latency harness for the classic (pre-agentic) RAG pipeline.
 
 Runs every question of the teacher-validated evaluation dataset through the
-current Ollama + FAISS pipeline, records the generated answer and the
-wall-clock latency of each call, and leaves the four quality criteria
-(pertinencia, claridad, precision, lenguaje) empty for an instructor to score
-by hand.
+Ollama + FAISS pipeline, records the generated answer and the wall-clock
+latency of each call, and leaves the four quality criteria (pertinencia,
+claridad, precision, lenguaje) empty for an instructor to score by hand.
+
+The pipeline measured here is deliberately the *classic* one: a single FAISS
+retrieval followed by a single generation call. The processor is built with
+``build_ollama_processor(enable_crag=False)`` so that the CRAG correction loop,
+which is on by default in production since issue #15, is explicitly switched
+off. Without that opt-out this harness would silently start measuring the
+agentic pipeline while still labelling its output ``classic-rag`` — and since
+no baseline has been recorded yet, the reference point CRAG is supposed to be
+compared against would be lost before it was ever taken.
 
 The script deliberately never scores answers automatically. Quality grading is
 a human task here: a heuristic or an LLM-as-judge shortcut would invalidate the
@@ -240,9 +248,12 @@ def build_summary(records: List[Dict[str, Any]], args: argparse.Namespace,
     return {
         "generated_at": datetime.now().isoformat(timespec='seconds'),
         "pipeline": "classic-rag",
-        "pipeline_note": "Pre-LangGraph pipeline: FAISS retrieval + single Ollama generation call, no CRAG/Self-RAG.",
+        "pipeline_note": "Classic pipeline: FAISS retrieval + single Ollama generation call. The CRAG "
+                         "correction loop is explicitly disabled (enable_crag=False), so these numbers "
+                         "remain the pre-agentic reference point even though production runs CRAG.",
         "configuration": {
             "model": OLLAMA_MODEL,
+            "crag_enabled": False,
             "temperature": OLLAMA_TEMPERATURE,
             "top_p": OLLAMA_TOP_P,
             "num_ctx": OLLAMA_NUM_CTX,
@@ -315,7 +326,9 @@ def prepare_context(document_location: str) -> Tuple[List[str], Any, float]:
     """
     logging.info(f"Loading course documents from '{document_location}'")
     document = LocalDocumentLoader(document_location).load_document()
-    llm = build_ollama_processor()
+    # enable_crag=False keeps this a classic-RAG measurement: linear retrieve ->
+    # generate, no relevance grading, no reformulation, control model never loaded.
+    llm = build_ollama_processor(enable_crag=False)
     context_chunked = document.get_chunked_text(llm.context_length)
     logging.info(f"Document split into {len(context_chunked)} chunks")
 
@@ -406,7 +419,7 @@ def run_baseline(args: argparse.Namespace) -> int:
     if args.dry_run:
         print(f"Dry run: dataset '{args.dataset}' is valid, {len(entries)} question(s) would be measured.")
         print(f"Results would be written to '{args.output}'.")
-        print(f"Configuration: model={OLLAMA_MODEL}, k={RETRIEVAL_K}, num_ctx={OLLAMA_NUM_CTX}.")
+        print(f"Configuration: model={OLLAMA_MODEL}, k={RETRIEVAL_K}, num_ctx={OLLAMA_NUM_CTX}, crag=disabled.")
         return 0
 
     if not entries:

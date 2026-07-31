@@ -1,9 +1,17 @@
 # Baseline measurement — classic RAG pipeline
 
-Harness that measures the **current, pre-LangGraph** pipeline (FAISS retrieval at
-`k=4` + a single Llama 3.1 8B generation call) so later CRAG/Self-RAG work has a
-number to be compared against. This baseline must be taken *before* the agentic
-loop is introduced, otherwise there is nothing to compare to.
+Harness that measures the **classic** pipeline (FAISS retrieval at `k=4` + a
+single Llama 3.1 8B generation call, no relevance grading, no reformulation) so
+the CRAG/Self-RAG work has a number to be compared against.
+
+> **The pipeline moved under this harness and the harness was pinned in place.**
+> Production enabled the CRAG correction loop in the same `ask_question` this
+> script calls. To keep measuring the reference point, `prepare_context` builds
+> its processor with `build_ollama_processor(enable_crag=False)`, and the summary
+> records `configuration.crag_enabled: false`. Do not remove that argument: with
+> CRAG on, this script would keep printing `classic-rag` while measuring a
+> slower, three-model-call pipeline, and the pre-agentic number — which has never
+> been recorded — would become unmeasurable.
 
 > **Status: no baseline has been measured yet.** This directory contains tooling
 > only. Two things are still missing and neither can be produced by this repo:
@@ -90,8 +98,9 @@ impossible to mistake for a badly scored one.
 ### Summary
 
 `configuration` records the model, temperature, `top_p`, `num_ctx`, chunk length,
-retrieval `k` and chunk count actually used — read from the pipeline constants, not
-re-declared — so a results file is self-describing. `latency` holds count, min,
+retrieval `k`, chunk count and `crag_enabled` actually used — read from the pipeline
+constants, not re-declared — so a results file is self-describing and cannot be
+mistaken for an agentic-pipeline run. `latency` holds count, min,
 max, mean, median, p95, stdev and total, over successful questions only. The same
 statistics are printed to stdout when the run ends.
 
@@ -131,4 +140,6 @@ how many questions are still awaiting scores.
 
 Once `dataset.jsonl` exists and a scored baseline is committed here, the CRAG and
 Self-RAG work can be measured against it. The comparison tooling is a separate
-piece of work — this runner only knows about the classic pipeline.
+piece of work — this runner only knows about the classic pipeline. The lever it
+will need already exists: `build_ollama_processor(enable_crag=True)` returns the
+same processor with the correction loop wired in.
