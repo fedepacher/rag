@@ -213,8 +213,9 @@ Para ejecutar la aplicacion es necesario ejecutar el siguiente comando:
 docker compose up --build
 ```
 
-Esto levantara las bases de datos MySQL y MongoDB, ademas ejecutara la API, Ollama el cual descargara el modelo Mistral 
-y el servicio de RAG.
+Esto levantara las bases de datos MySQL y MongoDB, ademas ejecutara la API, Ollama el cual descargara los modelos
+Llama 3.1 8B (generacion) y Phi-3.5-mini (reservado para los nodos CRAG/Self-RAG, todavia no utilizado) y el
+servicio de RAG.
 
 
 ## Acceso a la base de datos MySQL
