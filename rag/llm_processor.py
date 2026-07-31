@@ -3,12 +3,15 @@ import os
 import requests
 import hashlib
 import shutil
-from typing import List
+from typing import Any, Dict, List, Optional
 
 os.environ['ANONYMIZED_TELEMETRY'] = 'False'  # Chroma spyware
+from typing_extensions import TypedDict
 from langchain_community.vectorstores import Chroma, FAISS
 from langchain.chains import RetrievalQA, LLMChain
 from langchain.prompts import PromptTemplate
+from langchain_core.documents import Document
+from langgraph.graph import END, START, StateGraph
 
 
 FAISS_INDEX_PATH = "resources/faiss_index"
@@ -16,6 +19,10 @@ DOC_HASH_PATH = os.path.join(FAISS_INDEX_PATH, "doc_hash.txt")
 # Number of chunks pulled from FAISS per question. Raised from 2 to 4 to give the
 # planned CRAG/Self-RAG grading nodes more candidates to filter.
 RETRIEVAL_K = 4
+# Separator used to stuff the retrieved chunks into the prompt. Matches the default
+# document_separator of the StuffDocumentsChain that RetrievalQA used before the
+# LangGraph migration, so the generated prompt stays byte-for-byte identical.
+DOCUMENT_SEPARATOR = "\n\n"
 INITIAL_PROMPT = """
 Eres un asistente experto que solo puede responder preguntas utilizando **únicamente** la información contenida en el documento a continuación. 
 No debes usar conocimientos previos, hacer suposiciones, inferencias externas ni inventar respuestas. 
@@ -28,6 +35,23 @@ DOCUMENTO:
 Pregunta: {question}
 Respuesta:
 """
+
+class RAGGraphState(TypedDict):
+    """State carried through the LangGraph RAG pipeline.
+
+    Attributes:
+        question (str): The question being answered, unchanged across the run.
+        retrieved_docs (List[Document]): Chunks returned by the FAISS retriever.
+        iteration_count (int): Number of retrieval attempts made so far. Always 0
+            today; the CRAG reformulation loop is the one that will increment it.
+        answer (Optional[str]): Text produced by the generation node, None until then.
+    """
+
+    question: str
+    retrieved_docs: List[Document]
+    iteration_count: int
+    answer: Optional[str]
+
 
 class BaseLLMProcessor:
     def __init__(self, llm, embedding, context_length):
@@ -53,6 +77,8 @@ class LLMProcessorOllama(BaseLLMProcessor):
     def __init__(self, llm, embedding, context_length):
         super().__init__(llm, embedding, context_length)
         self.vectorstore = None
+        self.qa_chain_prompt = PromptTemplate.from_template(INITIAL_PROMPT)
+        self.graph = None
 
     @staticmethod
     def get_text_hash(context: list[str]) -> str:
@@ -82,6 +108,59 @@ class LLMProcessorOllama(BaseLLMProcessor):
             self.vectorstore.save_local(FAISS_INDEX_PATH)
             self.save_hash(context)
 
+    def retrieve_node(self, state: RAGGraphState) -> Dict[str, Any]:
+        """Graph node: pull the most similar chunks for the question out of FAISS.
+
+        Args:
+            state (RAGGraphState): Current graph state, read for its question.
+
+        Returns:
+            Dict[str, Any]: State update carrying the retrieved documents.
+        """
+        question = state["question"]
+        retriever = self.vectorstore.as_retriever(search_kwargs={"k": RETRIEVAL_K})
+        retrieved_docs = retriever.invoke(question)
+        logging.debug(f"Retrieved {len(retrieved_docs)} chunk(s) from FAISS (k={RETRIEVAL_K})")
+        return {"retrieved_docs": retrieved_docs}
+
+    def generate_node(self, state: RAGGraphState) -> Dict[str, Any]:
+        """Graph node: stuff the retrieved chunks into the prompt and call the LLM.
+
+        Args:
+            state (RAGGraphState): Current graph state, read for its question and
+                retrieved documents.
+
+        Returns:
+            Dict[str, Any]: State update carrying the generated answer.
+        """
+        question = state["question"]
+        retrieved_docs = state["retrieved_docs"]
+        context = DOCUMENT_SEPARATOR.join(document.page_content for document in retrieved_docs)
+        prompt = self.qa_chain_prompt.format(context=context, question=question)
+
+        logging.debug("Waiting for LLM response")
+        llm_response = self.llm.invoke(prompt)
+        answer = llm_response if isinstance(llm_response, str) else str(llm_response)
+        return {"answer": answer}
+
+    def build_graph(self):
+        """Compile the RAG state graph: START -> retrieve -> generate -> END.
+
+        The graph is intentionally linear. Conditional edges (CRAG relevance grading
+        and its reformulation loop, Self-RAG grounding verification) are added by the
+        follow-up issues; this one only replaces the former RetrievalQA chain.
+
+        Returns:
+            CompiledStateGraph: Graph ready to be invoked with a RAGGraphState.
+        """
+        workflow = StateGraph(RAGGraphState)
+        workflow.add_node("retrieve", self.retrieve_node)
+        workflow.add_node("generate", self.generate_node)
+        workflow.add_edge(START, "retrieve")
+        workflow.add_edge("retrieve", "generate")
+        workflow.add_edge("generate", END)
+        return workflow.compile()
+
     def ask_question(self, question: str, context: List[str]) -> str:
         """
         Answer a question using the configured Ollama model with FAISS in-memory vector store.
@@ -103,22 +182,20 @@ class LLMProcessorOllama(BaseLLMProcessor):
             if self.vectorstore is None:
                 self.build_or_load_vectorstore(context)
 
-            # Define prompt
-            qa_chain_prompt = PromptTemplate.from_template(INITIAL_PROMPT)
+            # Compile the graph once and reuse it across questions
+            if self.graph is None:
+                self.graph = self.build_graph()
+                logging.debug("LangGraph RAG state graph compiled")
 
-            # Set up RetrievalQA chain
-            qachain = RetrievalQA.from_chain_type(
-                self.llm,
-                retriever=self.vectorstore.as_retriever(search_kwargs={"k": RETRIEVAL_K}),
-                return_source_documents=False,
-                chain_type_kwargs={"prompt": qa_chain_prompt}
-            )
-            logging.debug("RetrievalQA chain initialized")
-
-            # Query LLM
-            logging.debug("Waiting for LLM response")
-            llm_response = qachain({"query": question})
-            answer = llm_response.get("result", "") if isinstance(llm_response, dict) else str(llm_response)
+            # Run the graph
+            final_state = self.graph.invoke({
+                "question": question,
+                "retrieved_docs": [],
+                # Bumped by the CRAG reformulation loop once that node exists.
+                "iteration_count": 0,
+                "answer": None
+            })
+            answer = final_state.get("answer") or ""
             logging.info(f"Answer generated: {answer[:100]}...")
             return answer
 

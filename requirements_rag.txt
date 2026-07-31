@@ -14,3 +14,9 @@ langchain-openai
 sentence-transformers
 transformers
 faiss-cpu
+# Only pinned entry in this file, on purpose. This repo still uses the LangChain 0.1-era
+# import paths (langchain.chains, langchain.llms, langchain.prompts) that LangChain 1.0
+# removed. langgraph >= 1.2 requires langchain-core >= 1.4.7 and would drag the whole
+# stack past that break; the 0.3 line is the newest one that still declares
+# langchain-core < 0.4, so it cannot force that upgrade.
+langgraph>=0.3,<0.4
