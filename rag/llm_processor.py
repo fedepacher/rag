@@ -106,7 +106,7 @@ class LLMProcessorOllama(BaseLLMProcessor):
             # Set up RetrievalQA chain
             qachain = RetrievalQA.from_chain_type(
                 self.llm,
-                retriever=self.vectorstore.as_retriever(search_kwargs={"k": 2}),
+                retriever=self.vectorstore.as_retriever(search_kwargs={"k": 4}),
                 return_source_documents=False,
                 chain_type_kwargs={"prompt": qa_chain_prompt}
             )
