@@ -113,7 +113,7 @@ def main(api_url, document_location, mongo_host, mongo_port, mongo_user, mongo_p
         from langchain.llms import Ollama
         from langchain.embeddings import GPT4AllEmbeddings
         # from langchain.embeddings import OllamaEmbeddings
-        model = "mistral"
+        model = "llama3.1:8b-instruct-q4_K_M"
         host = "http://localhost:11434"
         llm = Ollama(model=model,
             base_url=host,

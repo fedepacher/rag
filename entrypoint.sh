@@ -11,16 +11,19 @@ until curl -s http://localhost:11434/api/ps > /dev/null; do
 done
 echo "Ollama server is running."
 
-# Check if the Mistral model is already downloaded
-echo "Checking if the Mistral model is already downloaded..."
-if curl -s http://localhost:11434/api/models | grep -q '"name": "mistral"'; then
-  echo "Mistral model is already downloaded."
-else
-  echo "Mistral model not found. Downloading..."
-  curl -X POST http://localhost:11434/api/pull -d '{
-    "name": "mistral"
-  }'
-fi
+# Generation model, plus phi3.5 which is pulled ahead of time to back the upcoming
+# CRAG/Self-RAG control nodes; nothing in the pipeline calls it yet.
+MODELS="llama3.1:8b-instruct-q4_K_M phi3.5:3.8b-mini-instruct-q4_K_M"
+
+for model in $MODELS; do
+  echo "Checking if the $model model is already downloaded..."
+  if ollama list | grep -qF "$model"; then
+    echo "$model model is already downloaded."
+  else
+    echo "$model model not found. Downloading..."
+    ollama pull "$model"
+  fi
+done
 
 # Start your Python script
 echo "Starting the Python script..."

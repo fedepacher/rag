@@ -81,7 +81,7 @@ class LLMProcessorOllama(BaseLLMProcessor):
 
     def ask_question(self, question: str, context: List[str]) -> str:
         """
-        Answer a question using the Mixtral-8x7B model with FAISS in-memory vector store.
+        Answer a question using the configured Ollama model with FAISS in-memory vector store.
 
         Args:
             question (str): The question to answer.
