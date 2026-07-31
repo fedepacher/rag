@@ -13,6 +13,9 @@ from langchain.prompts import PromptTemplate
 
 FAISS_INDEX_PATH = "resources/faiss_index"
 DOC_HASH_PATH = os.path.join(FAISS_INDEX_PATH, "doc_hash.txt")
+# Number of chunks pulled from FAISS per question. Raised from 2 to 4 to give the
+# planned CRAG/Self-RAG grading nodes more candidates to filter.
+RETRIEVAL_K = 4
 INITIAL_PROMPT = """
 Eres un asistente experto que solo puede responder preguntas utilizando **únicamente** la información contenida en el documento a continuación. 
 No debes usar conocimientos previos, hacer suposiciones, inferencias externas ni inventar respuestas. 
@@ -106,7 +109,7 @@ class LLMProcessorOllama(BaseLLMProcessor):
             # Set up RetrievalQA chain
             qachain = RetrievalQA.from_chain_type(
                 self.llm,
-                retriever=self.vectorstore.as_retriever(search_kwargs={"k": 4}),
+                retriever=self.vectorstore.as_retriever(search_kwargs={"k": RETRIEVAL_K}),
                 return_source_documents=False,
                 chain_type_kwargs={"prompt": qa_chain_prompt}
             )

@@ -58,4 +58,9 @@ and it must never be copied into `dataset.jsonl`.
    versioned in git — treat entries as append-only and bump `validated_at` when
    an answer is revised, rather than silently editing it in place.
 
-No evaluation runner reads this file yet.
+## Who reads this file
+
+`run_baseline.py` is the only consumer: it runs every entry through the current
+pipeline and records the answer and its latency. See `BASELINE.md` for how to run
+it and what it writes. It refuses to start while `dataset.jsonl` is missing, so
+the tooling stays inert until the instructors deliver the questions.
