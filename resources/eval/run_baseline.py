@@ -1,36 +1,48 @@
-"""Baseline latency harness for the classic (pre-agentic) RAG pipeline.
+"""Latency harness for the RAG pipeline, in either of its two shapes.
 
 Runs every question of the teacher-validated evaluation dataset through the
 Ollama + FAISS pipeline, records the generated answer and the wall-clock
 latency of each call, and leaves the four quality criteria (pertinencia,
 claridad, precision, lenguaje) empty for an instructor to score by hand.
 
-The pipeline measured here is deliberately the *classic* one: a single FAISS
-retrieval followed by a single generation call. The processor is built with
-``build_ollama_processor(enable_crag=False)`` so that the CRAG correction loop,
-which is on by default in production since issue #15, is explicitly switched
-off. Without that opt-out this harness would silently start measuring the
-agentic pipeline while still labelling its output ``classic-rag`` — and since
-no baseline has been recorded yet, the reference point CRAG is supposed to be
-compared against would be lost before it was ever taken.
+Which pipeline gets measured is chosen with ``--no-crag`` (the default) or
+``--crag``:
+
+* ``--no-crag`` builds ``build_ollama_processor(enable_crag=False)``: a single
+  FAISS retrieval followed by a single generation call. This is the classic,
+  pre-agentic reference point, and it is the default on purpose. Production has
+  had the CRAG correction loop on by default since issue #15, so without an
+  explicit opt-out this harness would silently measure the agentic pipeline
+  while still labelling its output ``classic-rag`` — and since no baseline has
+  been recorded yet, the reference point CRAG is meant to be compared against
+  would be lost before it was ever taken.
+* ``--crag`` builds ``build_ollama_processor(enable_crag=True)`` and
+  additionally records, per question, how many reformulations the correction
+  loop performed and whether the out-of-scope short-circuit fired.
+
+Both arms are measured by the same code on the same code path, which is the
+whole point of running them from one script: a comparison between two harnesses
+would be a comparison between two measurement methodologies. They write to
+different files (``results/baseline_*`` vs ``results/crag_*``), and the harness
+refuses to append a run of one pipeline onto a results file recorded with the
+other. ``compare_runs.py`` diffs the two.
 
 The script deliberately never scores answers automatically. Quality grading is
 a human task here: a heuristic or an LLM-as-judge shortcut would invalidate the
 very baseline this measurement exists to produce.
 
 Run it from the repository root, on the target hardware, with the Ollama server
-already up (see resources/eval/BASELINE.md).
+already up (see resources/eval/BASELINE.md and resources/eval/AB_TESTING.md).
 """
 
 import argparse
 import json
 import logging
 import os
-import statistics
 import sys
 import time
 from datetime import datetime
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 import requests
 
@@ -40,40 +52,147 @@ import requests
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, os.pardir))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
+# resources/ is not a package, so the sibling results-format module is imported by
+# directory rather than by dotted path.
+EVAL_DIR = os.path.dirname(os.path.abspath(__file__))
+if EVAL_DIR not in sys.path:
+    sys.path.insert(0, EVAL_DIR)
 
+from eval_io import (PIPELINE_ERROR_PREFIX, QUALITY_CRITERIA, SCHEMA_VERSION,  # noqa: E402
+                     append_record, build_output_path, is_successful, load_records,
+                     load_recorded_ids, pipeline_label, record_pipeline, summarize_latencies,
+                     write_summary)
 from rag.document_loader import LocalDocumentLoader  # noqa: E402
-from rag.llm_processor import RETRIEVAL_K  # noqa: E402
+from rag.llm_processor import MAX_CRAG_ITERATIONS, OUT_OF_SCOPE_ANSWER, RETRIEVAL_K  # noqa: E402
 from rag.main import (OLLAMA_CONTEXT_LENGTH, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_NUM_CTX,  # noqa: E402
-                      OLLAMA_TEMPERATURE, OLLAMA_TOP_P, build_ollama_processor)
+                      OLLAMA_TEMPERATURE, OLLAMA_TOP_P, PHI_MODEL, build_ollama_processor)
 
 DEFAULT_DATASET_PATH = os.path.join("resources", "eval", "dataset.jsonl")
-RESULTS_DIR = os.path.join("resources", "eval", "results")
 DEFAULT_DOCUMENT_LOCATION = os.path.join("resources", "files")
 DEFAULT_OLLAMA_SERVER_URL = OLLAMA_HOST
 
-# Criteria scored by a human reviewer after the run. Written as null so an unscored
-# record is impossible to mistake for a zero.
-QUALITY_CRITERIA = ("pertinencia", "claridad", "precision", "lenguaje")
 REQUIRED_DATASET_FIELDS = ("id", "question")
 
-# LLMProcessorOllama swallows its own exceptions and returns a message with this prefix
-# instead of raising, so a failed question has to be detected by inspecting the answer.
-PIPELINE_ERROR_PREFIX = "Error:"
 WARMUP_QUESTION = "Pregunta de calentamiento del modelo, la respuesta no se registra."
 
 
-def build_output_path(model: str, retrieval_k: int) -> str:
-    """Build the default results path for a model/retrieval-depth combination.
+class CragInstrumentation:
+    """Counts CRAG node executions, one question at a time.
+
+    ``ask_question`` returns a plain ``str``. The final graph state — where
+    ``iteration_count`` and the relevance verdicts live — never leaves the processor,
+    and widening that return type would change the contract of the method the API and
+    email paths call in production, for the sake of a measurement-only concern. So
+    instead of reaching into the pipeline, this class wraps the bound CRAG node methods
+    on the processor *instance* and counts the calls from the outside.
+
+    The wrappers only observe: each delegates to the original node and returns its state
+    update untouched, so the pipeline being measured stays byte-for-byte the pipeline
+    that runs in production. Without this, the A/B report could not answer either of the
+    two questions issue #16 asks — "how slow is the worst case with 2 iterations" and
+    "how often does the out-of-scope short-circuit fire" — because both are properties of
+    the walk through the graph, not of the answer that comes out of it.
+
+    ``install`` must run before the first question: ``build_graph`` captures the bound
+    methods when it compiles the graph, and ``ask_question`` compiles it lazily on the
+    first call.
 
     Args:
-        model: Ollama model tag being measured.
-        retrieval_k: Number of chunks pulled from the vector store per question.
+        processor: Processor returned by ``build_ollama_processor(enable_crag=True)``.
+    """
+
+    def __init__(self, processor: Any):
+        self.processor = processor
+        self.installed = False
+        self.retrievals = 0
+        self.relevance_grades = 0
+        self.reformulations = 0
+        self.relevance_verdicts: List[Optional[str]] = []
+
+    def install(self) -> None:
+        """Wrap the CRAG nodes of the processor with counting delegates.
+
+        Raises:
+            ValueError: If the processor has no grader model, i.e. CRAG is off and there
+                is nothing to instrument.
+        """
+        if self.installed:
+            return
+        if self.processor.grader_llm is None:
+            raise ValueError("Cannot instrument CRAG on a processor built with enable_crag=False")
+
+        def counting(original: Callable[..., Dict[str, Any]],
+                     observe: Callable[[Dict[str, Any]], None]) -> Callable[..., Dict[str, Any]]:
+            def wrapper(state: Dict[str, Any]) -> Dict[str, Any]:
+                update = original(state)
+                observe(update)
+                return update
+            return wrapper
+
+        def count_retrieval(_update: Dict[str, Any]) -> None:
+            self.retrievals += 1
+
+        def count_grade(update: Dict[str, Any]) -> None:
+            self.relevance_grades += 1
+            self.relevance_verdicts.append(update.get("relevance"))
+
+        def count_reformulation(update: Dict[str, Any]) -> None:
+            # reformulate_query_node owns iteration_count and increments it even when the
+            # rewrite fails, so its own number is the authoritative one to record.
+            self.reformulations = update.get("iteration_count", self.reformulations + 1)
+
+        self.processor.retrieve_node = counting(self.processor.retrieve_node, count_retrieval)
+        self.processor.grade_relevance_node = counting(self.processor.grade_relevance_node, count_grade)
+        self.processor.reformulate_query_node = counting(self.processor.reformulate_query_node,
+                                                         count_reformulation)
+        # The graph binds these methods when it compiles. Drop any graph compiled before
+        # the wrappers went in, otherwise the instrumented nodes would never be called.
+        self.processor.graph = None
+        self.installed = True
+        logging.debug("CRAG instrumentation installed on the processor's graph nodes")
+
+    def reset(self) -> None:
+        """Zero the counters before measuring the next question."""
+        self.retrievals = 0
+        self.relevance_grades = 0
+        self.reformulations = 0
+        self.relevance_verdicts = []
+
+    def snapshot(self, answer: str) -> Dict[str, Any]:
+        """Freeze the counters of the question that just ran.
+
+        Args:
+            answer: Answer the pipeline returned, used to detect the short-circuit.
+
+        Returns:
+            Dict[str, Any]: The ``crag`` block of the result record.
+        """
+        return {
+            "reformulations": self.reformulations,
+            "retrievals": self.retrievals,
+            "relevance_grades": self.relevance_grades,
+            "relevance_verdicts": list(self.relevance_verdicts),
+            "hit_iteration_cap": self.reformulations >= MAX_CRAG_ITERATIONS,
+            "out_of_scope": is_out_of_scope(answer)
+        }
+
+
+def is_out_of_scope(answer: str) -> bool:
+    """Report whether an answer is the CRAG out-of-scope short-circuit.
+
+    Compared against the constant rather than pattern-matched, so a rewording of
+    OUT_OF_SCOPE_ANSWER cannot quietly turn into a wrong short-circuit rate. Checked for
+    both arms even though the classic pipeline has no node that can produce it: a
+    non-zero count on the classic side would mean the two runs were not what they claim
+    to be, which is worth catching.
+
+    Args:
+        answer: Answer returned by the pipeline.
 
     Returns:
-        str: Path such as ``resources/eval/results/baseline_<model>_k4.jsonl``.
+        bool: True when the answer is the out-of-scope refusal, verbatim.
     """
-    model_slug = model.replace(":", "-").replace("/", "-")
-    return os.path.join(RESULTS_DIR, f"baseline_{model_slug}_k{retrieval_k}.jsonl")
+    return answer.strip() == OUT_OF_SCOPE_ANSWER.strip()
 
 
 def load_dataset(path: str) -> List[Dict[str, Any]]:
@@ -122,68 +241,29 @@ def load_dataset(path: str) -> List[Dict[str, Any]]:
     return entries
 
 
-def load_recorded_ids(path: str) -> Set[str]:
-    """Collect the question ids already present in a results file.
-
-    Args:
-        path: Path to a results JSON Lines file, which may not exist.
-
-    Returns:
-        Set[str]: Ids already measured. Empty if the file is absent.
-    """
-    if not os.path.exists(path):
-        return set()
-    recorded: Set[str] = set()
-    with open(path, 'r', encoding='utf-8') as results_file:
-        for raw_line in results_file:
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                recorded.add(str(json.loads(line)['id']))
-            except (json.JSONDecodeError, KeyError, TypeError):
-                logging.warning(f"Skipping unreadable record while scanning '{path}' for resumable ids")
-    return recorded
-
-
-def load_records(path: str) -> List[Dict[str, Any]]:
-    """Read every result record from a results file.
-
-    Args:
-        path: Path to a results JSON Lines file, which may not exist.
-
-    Returns:
-        List[Dict[str, Any]]: Parsed records, skipping unreadable lines.
-    """
-    if not os.path.exists(path):
-        return []
-    records: List[Dict[str, Any]] = []
-    with open(path, 'r', encoding='utf-8') as results_file:
-        for raw_line in results_file:
-            line = raw_line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                logging.warning(f"Skipping unreadable record in '{path}'")
-    return records
-
-
-def build_record(entry: Dict[str, Any], answer: str, latency_sec: float) -> Dict[str, Any]:
+def build_record(entry: Dict[str, Any], answer: str, latency_sec: float,
+                 crag_stats: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """Assemble the result record for a single measured question.
 
     Args:
         entry: Dataset entry the question came from.
         answer: Answer returned by the pipeline, verbatim.
         latency_sec: Wall-clock seconds spent inside the pipeline call.
+        crag_stats: Snapshot of the correction loop for this question, or None on a
+            classic run. None rather than a block of zeroes on purpose, and for the same
+            reason ``scores`` starts as null: "the loop was not there" and "the loop ran
+            and did nothing" are different facts, and a comparison that confused the two
+            would report a reformulation rate of zero for a pipeline that has no
+            reformulation node at all.
 
     Returns:
         Dict[str, Any]: Record ready to be appended to the results file, with the
         four quality criteria left as null for a human reviewer.
     """
     return {
+        "schema_version": SCHEMA_VERSION,
         "id": str(entry['id']),
+        "pipeline": pipeline_label(crag_stats is not None),
         "question": entry['question'],
         "expected_answer": entry.get('expected_answer'),
         "source_doc": entry.get('source_doc'),
@@ -192,6 +272,8 @@ def build_record(entry: Dict[str, Any], answer: str, latency_sec: float) -> Dict
         "generated_answer": answer,
         "latency_sec": round(latency_sec, 3),
         "pipeline_error": answer.startswith(PIPELINE_ERROR_PREFIX),
+        "out_of_scope": is_out_of_scope(answer),
+        "crag": crag_stats,
         "measured_at": datetime.now().isoformat(timespec='seconds'),
         "scores": {criterion: None for criterion in QUALITY_CRITERIA},
         "scored_by": None,
@@ -200,29 +282,51 @@ def build_record(entry: Dict[str, Any], answer: str, latency_sec: float) -> Dict
     }
 
 
-def summarize_latencies(latencies: List[float]) -> Dict[str, Any]:
-    """Compute descriptive latency statistics.
+def summarize_crag(records: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Aggregate the per-question CRAG counters of a run.
+
+    Splitting latency by reformulation count is what turns the raw numbers into the
+    typical-case and worst-case figures issue #16 asks for: bucket 0 is a question the
+    correction loop did not touch, bucket ``MAX_CRAG_ITERATIONS`` is the worst case.
 
     Args:
-        latencies: Per-question wall-clock seconds, successful questions only.
+        records: Every result record of a CRAG run.
 
     Returns:
-        Dict[str, Any]: Count plus min/max/mean/median/p95/stdev/total in seconds.
-        Fields that need more samples than available are null.
+        Dict[str, Any]: Reformulation histogram, verdict counts, out-of-scope tally and
+        per-bucket latency statistics.
     """
-    if not latencies:
-        return {"count": 0}
-    ordered = sorted(latencies)
-    p95_index = min(len(ordered) - 1, int(round(0.95 * (len(ordered) - 1))))
+    histogram: Dict[str, int] = {}
+    verdict_counts: Dict[str, int] = {}
+    latencies_by_bucket: Dict[str, List[float]] = {}
+    out_of_scope_ids: List[str] = []
+
+    for record in records:
+        crag = record.get('crag') or {}
+        bucket = str(crag.get('reformulations', 0))
+        histogram[bucket] = histogram.get(bucket, 0) + 1
+        for verdict in crag.get('relevance_verdicts') or []:
+            key = str(verdict)
+            verdict_counts[key] = verdict_counts.get(key, 0) + 1
+        if record.get('out_of_scope'):
+            out_of_scope_ids.append(str(record.get('id')))
+        if is_successful(record):
+            latencies_by_bucket.setdefault(bucket, []).append(record['latency_sec'])
+
+    answered = [record for record in records if is_successful(record)]
     return {
-        "count": len(ordered),
-        "min_sec": round(ordered[0], 3),
-        "max_sec": round(ordered[-1], 3),
-        "mean_sec": round(statistics.mean(ordered), 3),
-        "median_sec": round(statistics.median(ordered), 3),
-        "p95_sec": round(ordered[p95_index], 3),
-        "stdev_sec": round(statistics.stdev(ordered), 3) if len(ordered) > 1 else None,
-        "total_sec": round(sum(ordered), 3)
+        "max_iterations": MAX_CRAG_ITERATIONS,
+        "reformulation_histogram": dict(sorted(histogram.items())),
+        "total_reformulations": sum(int(bucket) * count for bucket, count in histogram.items()),
+        "questions_reformulated": sum(count for bucket, count in histogram.items() if int(bucket) > 0),
+        "questions_at_iteration_cap": sum(count for bucket, count in histogram.items()
+                                          if int(bucket) >= MAX_CRAG_ITERATIONS),
+        "relevance_verdict_counts": dict(sorted(verdict_counts.items())),
+        "out_of_scope_answers": len(out_of_scope_ids),
+        "out_of_scope_rate": round(len(out_of_scope_ids) / len(answered), 4) if answered else None,
+        "out_of_scope_ids": out_of_scope_ids,
+        "latency_by_reformulations": {bucket: summarize_latencies(latencies)
+                                      for bucket, latencies in sorted(latencies_by_bucket.items())}
     }
 
 
@@ -241,19 +345,29 @@ def build_summary(records: List[Dict[str, Any]], args: argparse.Namespace,
     Returns:
         Dict[str, Any]: Self-describing summary of configuration and latency.
     """
-    successful = [record['latency_sec'] for record in records if not record.get('pipeline_error')]
-    failed = [record['id'] for record in records if record.get('pipeline_error')]
+    successful = [record['latency_sec'] for record in records if is_successful(record)]
+    failed = [record['id'] for record in records if not is_successful(record)]
     scored = [record for record in records
               if all(record.get('scores', {}).get(criterion) is not None for criterion in QUALITY_CRITERIA)]
-    return {
-        "generated_at": datetime.now().isoformat(timespec='seconds'),
-        "pipeline": "classic-rag",
-        "pipeline_note": "Classic pipeline: FAISS retrieval + single Ollama generation call. The CRAG "
+    if args.crag:
+        pipeline_note = ("CRAG pipeline: FAISS retrieval, Phi-3.5-mini relevance grading, up to "
+                         f"{MAX_CRAG_ITERATIONS} query reformulations and the out-of-scope short-circuit "
+                         "(enable_crag=True). Compare against the classic-rag results file of the same "
+                         "model and k with resources/eval/compare_runs.py.")
+    else:
+        pipeline_note = ("Classic pipeline: FAISS retrieval + single Ollama generation call. The CRAG "
                          "correction loop is explicitly disabled (enable_crag=False), so these numbers "
-                         "remain the pre-agentic reference point even though production runs CRAG.",
+                         "remain the pre-agentic reference point even though production runs CRAG.")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "generated_at": datetime.now().isoformat(timespec='seconds'),
+        "pipeline": pipeline_label(args.crag),
+        "pipeline_note": pipeline_note,
         "configuration": {
             "model": OLLAMA_MODEL,
-            "crag_enabled": False,
+            "crag_enabled": args.crag,
+            "grader_model": PHI_MODEL if args.crag else None,
+            "max_crag_iterations": MAX_CRAG_ITERATIONS if args.crag else None,
             "temperature": OLLAMA_TEMPERATURE,
             "top_p": OLLAMA_TOP_P,
             "num_ctx": OLLAMA_NUM_CTX,
@@ -268,10 +382,14 @@ def build_summary(records: List[Dict[str, Any]], args: argparse.Namespace,
             "questions_recorded": len(records),
             "questions_failed": len(failed),
             "failed_ids": failed,
+            "out_of_scope_answers": sum(1 for record in records if record.get('out_of_scope')),
             "warmup_latency_sec": round(warmup_latency_sec, 3) if warmup_latency_sec is not None else None,
             "index_build_or_load_sec": round(index_build_sec, 3) if index_build_sec is not None else None
         },
         "latency": summarize_latencies(successful),
+        # Null rather than an empty block on a classic run: the classic graph has no
+        # grading or reformulation node, so there is nothing that could have been counted.
+        "crag": summarize_crag(records) if args.crag else None,
         "quality": {
             "criteria": list(QUALITY_CRITERIA),
             "scored_questions": len(scored),
@@ -279,21 +397,6 @@ def build_summary(records: List[Dict[str, Any]], args: argparse.Namespace,
             "note": "Quality scores are filled in by hand by course instructors. This harness never auto-scores."
         }
     }
-
-
-def append_record(path: str, record: Dict[str, Any]) -> None:
-    """Append a single record to the results file and flush it to disk.
-
-    Records are written one at a time so that a run interrupted after two hours
-    of generation keeps everything it already measured.
-
-    Args:
-        path: Results file path.
-        record: Record to append.
-    """
-    with open(path, 'a', encoding='utf-8') as results_file:
-        results_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-        results_file.flush()
 
 
 def check_ollama(ollama_url: str) -> None:
@@ -314,47 +417,69 @@ def check_ollama(ollama_url: str) -> None:
     logging.info(f"Ollama is reachable at '{ollama_url}'")
 
 
-def prepare_context(document_location: str) -> Tuple[List[str], Any, float]:
+def prepare_context(document_location: str,
+                    enable_crag: bool) -> Tuple[List[str], Any, Optional[CragInstrumentation], float]:
     """Load the course documents and build or load the FAISS index.
 
     Args:
         document_location: Directory holding the course PDFs/DOCXs.
+        enable_crag: Build the processor with the CRAG correction loop wired in.
+            False keeps this a classic-RAG measurement: linear retrieve -> generate, no
+            relevance grading, no reformulation, control model never loaded.
 
     Returns:
-        Tuple[List[str], Any, float]: Context chunks, the ready processor, and the
-        seconds spent building or loading the vector store.
+        Tuple[List[str], Any, Optional[CragInstrumentation], float]: Context chunks, the
+        ready processor, the node counters (None on a classic run) and the seconds spent
+        building or loading the vector store.
     """
     logging.info(f"Loading course documents from '{document_location}'")
     document = LocalDocumentLoader(document_location).load_document()
-    # enable_crag=False keeps this a classic-RAG measurement: linear retrieve ->
-    # generate, no relevance grading, no reformulation, control model never loaded.
-    llm = build_ollama_processor(enable_crag=False)
+    llm = build_ollama_processor(enable_crag=enable_crag)
     context_chunked = document.get_chunked_text(llm.context_length)
     logging.info(f"Document split into {len(context_chunked)} chunks")
+
+    instrumentation: Optional[CragInstrumentation] = None
+    if enable_crag:
+        # Installed here, before any question runs, because the graph binds its node
+        # callables when ask_question lazily compiles it on the first call.
+        instrumentation = CragInstrumentation(llm)
+        instrumentation.install()
 
     logging.info("Building or loading the FAISS index")
     index_start = time.perf_counter()
     llm.build_or_load_vectorstore(context_chunked)
     index_build_sec = time.perf_counter() - index_start
     logging.info(f"FAISS index ready in {index_build_sec:.1f} s")
-    return context_chunked, llm, index_build_sec
+    return context_chunked, llm, instrumentation, index_build_sec
 
 
-def measure(llm: Any, question: str, context_chunked: List[str]) -> Tuple[str, float]:
+def measure(llm: Any, question: str, context_chunked: List[str],
+            instrumentation: Optional[CragInstrumentation]) -> Tuple[str, float, Optional[Dict[str, Any]]]:
     """Run one question through the pipeline and time it.
+
+    Both arms go through ``process_questionnaire``, the same entry point production
+    uses. A harness that called the graph directly to read its final state would be
+    measuring a code path no student ever hits, and the A/B comparison would then be
+    partly a comparison of measurement methods.
 
     Args:
         llm: Processor returned by ``build_ollama_processor``.
         question: Question text to send.
         context_chunked: Context chunks backing the vector store.
+        instrumentation: CRAG node counters, or None on a classic run.
 
     Returns:
-        Tuple[str, float]: The answer and the wall-clock seconds it took.
+        Tuple[str, float, Optional[Dict[str, Any]]]: The answer, the wall-clock seconds
+        it took, and the CRAG snapshot of this question (None on a classic run).
     """
+    if instrumentation is not None:
+        instrumentation.reset()
     start = time.perf_counter()
     answer = llm.process_questionnaire(question, context_chunked)
     latency_sec = time.perf_counter() - start
-    return answer if isinstance(answer, str) else str(answer), latency_sec
+    answer = answer if isinstance(answer, str) else str(answer)
+    crag_stats = instrumentation.snapshot(answer) if instrumentation is not None else None
+    return answer, latency_sec, crag_stats
 
 
 def print_summary(summary: Dict[str, Any]) -> None:
@@ -366,7 +491,8 @@ def print_summary(summary: Dict[str, Any]) -> None:
     latency = summary['latency']
     run = summary['run']
     print("\n" + "=" * 72)
-    print(f"Baseline run - {summary['configuration']['model']} - k={summary['configuration']['retrieval_k']}")
+    print(f"{summary['pipeline']} run - {summary['configuration']['model']} - "
+          f"k={summary['configuration']['retrieval_k']}")
     print("=" * 72)
     print(f"Questions recorded : {run['questions_recorded']} ({run['questions_failed']} failed)")
     if run['index_build_or_load_sec'] is not None:
@@ -383,13 +509,46 @@ def print_summary(summary: Dict[str, Any]) -> None:
         print(f"Total generation   : {latency['total_sec'] / 60:.1f} min")
     else:
         print("Latency            : no successful question, nothing to summarize")
+    if summary['crag'] is not None:
+        crag = summary['crag']
+        histogram = ", ".join(f"{bucket}x: {count}" for bucket, count in crag['reformulation_histogram'].items())
+        print(f"Reformulations     : {crag['total_reformulations']} over "
+              f"{crag['questions_reformulated']} question(s) [{histogram or 'none'}]")
+        print(f"At iteration cap   : {crag['questions_at_iteration_cap']} question(s)")
+        print(f"Out of scope       : {crag['out_of_scope_answers']} question(s) short-circuited")
     print(f"Quality scores     : {summary['quality']['pending_questions']} question(s) still awaiting "
           f"instructor scoring")
     print("=" * 72 + "\n")
 
 
-def run_baseline(args: argparse.Namespace) -> int:
-    """Execute the baseline run.
+def assert_pipeline_matches(path: str, requested_pipeline: str) -> None:
+    """Refuse to mix two pipelines inside one results file.
+
+    Appending a CRAG run onto the classic baseline (or the reverse) would produce a file
+    whose latency statistics average two different pipelines, and nothing downstream
+    could tell afterwards which record came from which. Easy to do by accident with
+    ``--output`` or a stale ``--resume``, and unrecoverable once the run has cost two
+    hours of generation, so it is checked before anything is measured.
+
+    Args:
+        path: Results file that already exists.
+        requested_pipeline: Pipeline label this run would append.
+
+    Raises:
+        ValueError: If the file was recorded with a different pipeline.
+    """
+    existing = {record_pipeline(record) for record in load_records(path)}
+    conflicting = existing - {requested_pipeline}
+    if conflicting:
+        raise ValueError(
+            f"Results file '{path}' was recorded with pipeline {sorted(conflicting)}, but this run is "
+            f"'{requested_pipeline}'. Mixing both in one file makes its statistics meaningless. Use the "
+            f"default --output for this pipeline, or point --output at a fresh file."
+        )
+
+
+def run_evaluation(args: argparse.Namespace) -> int:
+    """Execute the measurement run for the selected pipeline.
 
     Args:
         args: Parsed command line arguments.
@@ -397,6 +556,7 @@ def run_baseline(args: argparse.Namespace) -> int:
     Returns:
         int: Process exit code.
     """
+    pipeline = pipeline_label(args.crag)
     entries = load_dataset(args.dataset)
     logging.info(f"Loaded {len(entries)} question(s) from '{args.dataset}'")
 
@@ -406,6 +566,7 @@ def run_baseline(args: argparse.Namespace) -> int:
                         f"A partial run is a smoke test, not a baseline.")
 
     if args.resume:
+        assert_pipeline_matches(args.output, pipeline)
         recorded_ids = load_recorded_ids(args.output)
         if recorded_ids:
             entries = [entry for entry in entries if str(entry['id']) not in recorded_ids]
@@ -418,8 +579,11 @@ def run_baseline(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         print(f"Dry run: dataset '{args.dataset}' is valid, {len(entries)} question(s) would be measured.")
+        print(f"Pipeline: {pipeline}.")
         print(f"Results would be written to '{args.output}'.")
-        print(f"Configuration: model={OLLAMA_MODEL}, k={RETRIEVAL_K}, num_ctx={OLLAMA_NUM_CTX}, crag=disabled.")
+        print(f"Configuration: model={OLLAMA_MODEL}, k={RETRIEVAL_K}, num_ctx={OLLAMA_NUM_CTX}, "
+              f"crag={'enabled' if args.crag else 'disabled'}"
+              f"{f', grader={PHI_MODEL}, max_iterations={MAX_CRAG_ITERATIONS}' if args.crag else ''}.")
         return 0
 
     if not entries:
@@ -431,46 +595,32 @@ def run_baseline(args: argparse.Namespace) -> int:
 
     check_ollama(args.ollama_url)
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    context_chunked, llm, index_build_sec = prepare_context(args.document_location)
+    context_chunked, llm, instrumentation, index_build_sec = prepare_context(args.document_location, args.crag)
 
     warmup_latency_sec: Optional[float] = None
     if args.warmup:
         logging.info("Warm-up call so the first measured question does not absorb the model load time")
-        _, warmup_latency_sec = measure(llm, WARMUP_QUESTION, context_chunked)
+        _, warmup_latency_sec, _ = measure(llm, WARMUP_QUESTION, context_chunked, instrumentation)
         logging.info(f"Warm-up finished in {warmup_latency_sec:.1f} s (discarded)")
 
     for position, entry in enumerate(entries, start=1):
         entry_id = str(entry['id'])
-        logging.info(f"[{position}/{len(entries)}] Measuring question '{entry_id}'")
-        answer, latency_sec = measure(llm, entry['question'], context_chunked)
+        logging.info(f"[{position}/{len(entries)}] Measuring question '{entry_id}' ({pipeline})")
+        answer, latency_sec, crag_stats = measure(llm, entry['question'], context_chunked, instrumentation)
         if answer.startswith(PIPELINE_ERROR_PREFIX):
             logging.error(f"Question '{entry_id}' failed inside the pipeline: {answer}")
+        if crag_stats is not None:
+            logging.info(f"Question '{entry_id}': {crag_stats['reformulations']} reformulation(s), "
+                         f"{crag_stats['retrievals']} retrieval(s), "
+                         f"out_of_scope={crag_stats['out_of_scope']}")
         logging.info(f"Question '{entry_id}' answered in {latency_sec:.1f} s")
-        append_record(args.output, build_record(entry, answer, latency_sec))
+        append_record(args.output, build_record(entry, answer, latency_sec, crag_stats))
 
     summary = build_summary(load_records(args.output), args, warmup_latency_sec, index_build_sec,
                             len(context_chunked))
     write_summary(args.output, summary)
     print_summary(summary)
     return 0
-
-
-def write_summary(output_path: str, summary: Dict[str, Any]) -> str:
-    """Write the run summary next to the results file.
-
-    Args:
-        output_path: Path of the results JSON Lines file.
-        summary: Summary produced by ``build_summary``.
-
-    Returns:
-        str: Path of the summary file that was written.
-    """
-    summary_path = f"{os.path.splitext(output_path)[0]}.summary.json"
-    with open(summary_path, 'w', encoding='utf-8') as summary_file:
-        json.dump(summary, summary_file, ensure_ascii=False, indent=2)
-        summary_file.write("\n")
-    logging.info(f"Summary written to '{summary_path}'")
-    return summary_path
 
 
 def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
@@ -483,13 +633,23 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         argparse.Namespace: Parsed arguments with defaults resolved.
     """
     parser = argparse.ArgumentParser(
-        description="Measure per-question latency of the classic RAG pipeline against the evaluation dataset.",
+        description="Measure per-question latency of the RAG pipeline against the evaluation dataset. "
+                    "Measures the classic pipeline by default; pass --crag for the agentic one.",
         epilog="Quality criteria are never scored automatically; the results file leaves them null for instructors."
     )
+    pipeline_group = parser.add_mutually_exclusive_group()
+    pipeline_group.add_argument('--crag', dest='crag', action='store_true',
+                                help="Measure the CRAG pipeline (relevance grading, bounded reformulation, "
+                                     "out-of-scope short-circuit) and record per-question iteration counts.")
+    pipeline_group.add_argument('--no-crag', dest='crag', action='store_false',
+                                help="Measure the classic retrieve -> generate pipeline. This is the default, "
+                                     "so an invocation with no flags still produces the pre-agentic baseline.")
+    parser.set_defaults(crag=False)
     parser.add_argument('--dataset', default=DEFAULT_DATASET_PATH,
                         help=f"Evaluation dataset in JSON Lines format (default: {DEFAULT_DATASET_PATH})")
     parser.add_argument('--output', default=None,
-                        help=f"Results file (default: {build_output_path(OLLAMA_MODEL, RETRIEVAL_K)})")
+                        help=f"Results file (default: {build_output_path(OLLAMA_MODEL, RETRIEVAL_K)}, or "
+                             f"{build_output_path(OLLAMA_MODEL, RETRIEVAL_K, True)} with --crag)")
     parser.add_argument('--document-location', default=os.getenv('DOCUMENT_LOCATION', DEFAULT_DOCUMENT_LOCATION),
                         help="Directory with the course documents (default: $DOCUMENT_LOCATION or "
                              f"{DEFAULT_DOCUMENT_LOCATION})")
@@ -510,7 +670,7 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
                         help="Logging verbosity (default: INFO)")
     args = parser.parse_args(list(argv) if argv is not None else None)
     if args.output is None:
-        args.output = build_output_path(OLLAMA_MODEL, RETRIEVAL_K)
+        args.output = build_output_path(OLLAMA_MODEL, RETRIEVAL_K, args.crag)
     return args
 
 
@@ -529,7 +689,7 @@ def main() -> int:
     logging.debug(f"Working directory set to '{REPO_ROOT}'")
 
     try:
-        return run_baseline(args)
+        return run_evaluation(args)
     except (FileNotFoundError, FileExistsError, ValueError, RuntimeError) as err:
         logging.error(str(err))
         return 1

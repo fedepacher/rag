@@ -60,7 +60,9 @@ and it must never be copied into `dataset.jsonl`.
 
 ## Who reads this file
 
-`run_baseline.py` is the only consumer: it runs every entry through the current
-pipeline and records the answer and its latency. See `BASELINE.md` for how to run
-it and what it writes. It refuses to start while `dataset.jsonl` is missing, so
-the tooling stays inert until the instructors deliver the questions.
+`run_baseline.py` is the only consumer: it runs every entry through the pipeline —
+classic by default, CRAG with `--crag` — and records the answer and its latency.
+See `BASELINE.md` for how to run it and what it writes, and `AB_TESTING.md` for
+comparing the two arms with `compare_runs.py`. It refuses to start while
+`dataset.jsonl` is missing, so the tooling stays inert until the instructors
+deliver the questions.

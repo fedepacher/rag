@@ -6,12 +6,19 @@ the CRAG/Self-RAG work has a number to be compared against.
 
 > **The pipeline moved under this harness and the harness was pinned in place.**
 > Production enabled the CRAG correction loop in the same `ask_question` this
-> script calls. To keep measuring the reference point, `prepare_context` builds
-> its processor with `build_ollama_processor(enable_crag=False)`, and the summary
-> records `configuration.crag_enabled: false`. Do not remove that argument: with
-> CRAG on, this script would keep printing `classic-rag` while measuring a
-> slower, three-model-call pipeline, and the pre-agentic number — which has never
-> been recorded — would become unmeasurable.
+> script calls. `prepare_context` therefore builds its processor with an explicit
+> `enable_crag`, defaulting to `False`, and the summary records
+> `configuration.crag_enabled`. Do not change that default: with CRAG on, an
+> invocation with no flags would print `classic-rag` while measuring a slower,
+> three-model-call pipeline, and the pre-agentic number — which has never been
+> recorded — would become unmeasurable.
+
+> **The same script also measures the CRAG arm.** Pass `--crag` and it runs the
+> agentic pipeline, records per-question iteration counts, and writes to
+> `results/crag_<model>_k<k>.jsonl` instead. One harness, one measurement
+> methodology, two comparable files. See **[`AB_TESTING.md`](AB_TESTING.md)** for
+> the full A/B workflow and `compare_runs.py`. This document covers the classic
+> arm, which is what the rest of it assumes.
 
 > **Status: no baseline has been measured yet.** This directory contains tooling
 > only. Two things are still missing and neither can be produced by this repo:
@@ -77,23 +84,33 @@ Two files, named after the model and retrieval depth that produced them:
 With today's configuration that resolves to
 `results/baseline_llama3.1-8b-instruct-q4_K_M_k4.jsonl`. The name is derived from
 the live configuration rather than hardcoded, so changing the model or `k` writes
-to a new file instead of overwriting an existing baseline.
+to a new file instead of overwriting an existing baseline. `--crag` swaps the
+`baseline_` prefix for `crag_`, so the two arms can never collide.
 
 ### Per-question record
 
 | Field | Written by | Description |
 |-------|-----------|-------------|
+| `schema_version` | runner | Version of this record shape, currently `2` |
 | `id`, `question`, `expected_answer`, `source_doc`, `topic`, `difficulty` | runner | Copied from the dataset entry so the record stands alone |
+| `pipeline` | runner | `classic-rag` or `crag`. The record states what produced it, so a renamed file cannot be misread |
 | `generated_answer` | runner | The pipeline's answer, verbatim |
 | `latency_sec` | runner | Wall-clock seconds of the pipeline call — retrieval plus generation, excluding index build and warm-up |
 | `pipeline_error` | runner | `true` when the pipeline returned an error instead of an answer |
+| `out_of_scope` | runner | `true` when the answer is the CRAG out-of-scope refusal. Always `false` on this arm — the classic graph has no node that can produce it |
+| `crag` | runner | Iteration counters. Always `null` on this arm; see [`AB_TESTING.md`](AB_TESTING.md) |
 | `measured_at` | runner | ISO 8601 timestamp of the call |
 | `scores` | **instructor** | The four criteria, `null` until scored |
 | `scored_by`, `scored_at` | **instructor** | Who scored it and when |
 | `reviewer_notes` | **instructor** | Free-form remarks |
 
 `scores` starts as `null` rather than `0` on purpose: an unscored answer must be
-impossible to mistake for a badly scored one.
+impossible to mistake for a badly scored one. `crag` is `null` on a classic record
+for the same reason — "the loop was not there" is not "the loop did nothing".
+
+Issue #16 added `schema_version`, `pipeline`, `out_of_scope` and `crag` to this
+shape (v1 → v2). No v1 file was ever committed, since no run has happened, so
+nothing on disk needed migrating. Readers treat a missing `schema_version` as 1.
 
 ### Summary
 
@@ -101,7 +118,8 @@ impossible to mistake for a badly scored one.
 retrieval `k`, chunk count and `crag_enabled` actually used — read from the pipeline
 constants, not re-declared — so a results file is self-describing and cannot be
 mistaken for an agentic-pipeline run. `latency` holds count, min,
-max, mean, median, p95, stdev and total, over successful questions only. The same
+max, mean, median, p95, stdev and total, over successful questions only. `crag` is
+`null` on this arm and holds the reformulation histogram on the other. The same
 statistics are printed to stdout when the run ends.
 
 ## Scoring the quality criteria
@@ -128,8 +146,10 @@ how many questions are still awaiting scores.
 
 | Flag | Purpose |
 |------|---------|
+| `--no-crag` | Measure the classic pipeline. **This is the default**, so a bare invocation still produces the baseline |
+| `--crag` | Measure the CRAG pipeline instead, writing to `results/crag_*` — see [`AB_TESTING.md`](AB_TESTING.md) |
 | `--dry-run` | Validate the dataset and print what would run; does not load the model |
-| `--resume` | Append to an existing results file, skipping ids already recorded |
+| `--resume` | Append to an existing results file, skipping ids already recorded. Refuses if that file was recorded with the other pipeline |
 | `--limit N` | Measure only the first N questions — smoke test only |
 | `--no-warmup` | Skip the discarded warm-up call |
 | `--dataset`, `--output` | Override the input and output paths |
@@ -138,8 +158,12 @@ how many questions are still awaiting scores.
 
 ## Next step
 
-Once `dataset.jsonl` exists and a scored baseline is committed here, the CRAG and
-Self-RAG work can be measured against it. The comparison tooling is a separate
-piece of work — this runner only knows about the classic pipeline. The lever it
-will need already exists: `build_ollama_processor(enable_crag=True)` returns the
-same processor with the correction loop wired in.
+Once `dataset.jsonl` exists, run this harness twice — once bare for the baseline,
+once with `--crag` — and diff the two files with `compare_runs.py`. The workflow,
+the CRAG-only record fields and how to read the report are documented in
+**[`AB_TESTING.md`](AB_TESTING.md)**.
+
+A scored baseline is still the gate on the quality half of that comparison: the
+report covers latency and short-circuit behaviour from the runs alone, but leaves
+quality and hallucination rate blocked until instructors fill `scores` in both
+files.
