@@ -207,6 +207,65 @@ UNGROUNDED_FALLBACK_ANSWER = (
     "pregunta siendo más específico, o consultarla directamente con el docente."
 )
 
+# --- Confidence level --------------------------------------------------------
+
+# How much the pipeline itself trusts the answer it is about to send. Derived from the
+# CRAG and Self-RAG signals already computed during the run — nothing new is measured
+# and no extra model call is made, the levels are just a reading of the final graph
+# state. Ordered from most to least trustworthy:
+#
+# * alta  - the first retrieval was graded `relevante` and the first generated answer
+#           passed grounding verification. Nothing had to be corrected.
+# * media - the answer is grounded, but the *retrieval* needed help: either the grader
+#           only found `parcialmente_relevante` context (the "partial bibliography
+#           coverage" case), or the student's own wording did not retrieve usable
+#           chunks and a CRAG reformulation had to find them. Both mean the answer may
+#           be incomplete even though everything it says is supported.
+# * baja  - the answer is grounded, but only on a second generation pass: the verifier
+#           rejected the first attempt and the strict retry prompt had to rescue it.
+#           This is the only signal about the *answer text* rather than about the
+#           retrieval, which is why it outranks the other two — on this exact question
+#           the generator demonstrably drifted away from the sources once already.
+CONFIDENCE_HIGH = "alta"
+CONFIDENCE_MEDIUM = "media"
+CONFIDENCE_LOW = "baja"
+
+# Used for the two terminal fallbacks (OUT_OF_SCOPE_ANSWER, UNGROUNDED_FALLBACK_ANSWER).
+# Those are not answers, they are refusals that already explain themselves, and labelling
+# a refusal with a confidence level would read as if there were something to trust in it.
+# No note is appended for this level, which also keeps both fallbacks byte-for-byte equal
+# to their constants — resources/eval/run_baseline.py detects the out-of-scope
+# short-circuit by comparing against OUT_OF_SCOPE_ANSWER verbatim.
+CONFIDENCE_NOT_APPLICABLE = "no_aplica"
+
+# Separator between the answer and its confidence note. A blank line plus a rule keeps
+# the note visually detached in the plain-text email the student receives, and gives any
+# caller that wants the bare answer back a single unambiguous split point.
+CONFIDENCE_NOTE_SEPARATOR = "\n\n---\n"
+
+# Student-facing wording per level. Written in the same register as OUT_OF_SCOPE_ANSWER
+# and UNGROUNDED_FALLBACK_ANSWER: it states what the system did, not how sure it "feels".
+# Each note says which signal produced the level, so a student who disagrees with it
+# knows what to check.
+CONFIDENCE_NOTES = {
+    CONFIDENCE_HIGH: (
+        "Nivel de confianza: alta. La bibliografía del curso cubre la consulta y todo lo "
+        "que afirma esta respuesta pudo verificarse contra el material recuperado."
+    ),
+    CONFIDENCE_MEDIUM: (
+        "Nivel de confianza: media. Lo que afirma esta respuesta pudo verificarse contra "
+        "el material, pero la bibliografía cubre el tema solo parcialmente o hubo que "
+        "reformular la búsqueda para encontrarlo, así que la respuesta puede estar "
+        "incompleta. Conviene contrastarla con el material de cátedra."
+    ),
+    CONFIDENCE_LOW: (
+        "Nivel de confianza: baja. Un primer intento de respuesta no pudo verificarse "
+        "contra la bibliografía y hubo que reescribirlo con criterios más estrictos. "
+        "Conviene contrastar esta respuesta con el material de cátedra antes de darla "
+        "por válida, o consultarla con el docente."
+    )
+}
+
 
 class RAGGraphState(TypedDict):
     """State carried through the LangGraph RAG pipeline.
@@ -282,7 +341,9 @@ class LLMProcessorOllama(BaseLLMProcessor):
       purpose so the pre-CRAG reference point does not disappear.
     * ``grader_llm`` set -> the CRAG correction loop, with relevance grading, bounded
       query reformulation and the out-of-scope short-circuit, followed by the Self-RAG
-      grounding verification of the generated answer.
+      grounding verification of the generated answer. Answers produced by this path
+      also carry a confidence note derived from those same verdicts; see
+      :meth:`derive_confidence`.
 
     Args:
         llm: Generation model (Llama 3.1 8B in production).
@@ -668,6 +729,69 @@ class LLMProcessorOllama(BaseLLMProcessor):
             return "generate"
         return "ungrounded"
 
+    @staticmethod
+    def derive_confidence(state: RAGGraphState) -> str:
+        """Read a confidence level out of the final graph state.
+
+        Pure function of the CRAG and Self-RAG signals the run already produced: no
+        extra model call, no extra measurement. It is evaluated once on the *final*
+        state rather than inside a graph node, which is what makes each check exact —
+        both loops overwrite their own verdict on every pass, so a verdict that
+        survives to the end can only have come from the node that ended the run:
+
+        * ``relevance == RELEVANCE_IRRELEVANT`` at the end means ``out_of_scope`` fired.
+          Any earlier ``irrelevante`` is followed by a reformulation and a fresh grade.
+        * ``grounding == GROUNDING_UNGROUNDED`` at the end means ``ungrounded`` fired.
+          Any earlier ``no_fundamentada`` is followed by a regeneration and a fresh
+          verification.
+
+        Checking the state instead of comparing the answer against OUT_OF_SCOPE_ANSWER
+        and UNGROUNDED_FALLBACK_ANSWER also means rewording either constant cannot
+        silently start labelling refusals as answers.
+
+        Args:
+            state (RAGGraphState): Final state returned by ``graph.invoke``.
+
+        Returns:
+            str: CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW, or
+            CONFIDENCE_NOT_APPLICABLE for the two terminal fallbacks. Anything the
+            checks cannot place — a missing relevance verdict, which the CRAG graph
+            cannot actually produce since grading always precedes generation — falls
+            back to CONFIDENCE_MEDIUM. The unknown case must never be advertised as
+            high confidence; only an explicit ``relevante`` verdict earns that.
+        """
+        relevance = state.get("relevance")
+        grounding = state.get("grounding")
+        if relevance == RELEVANCE_IRRELEVANT or grounding == GROUNDING_UNGROUNDED:
+            return CONFIDENCE_NOT_APPLICABLE
+        # More than one generation pass means the verifier rejected the first answer.
+        # Compared against 1 rather than against MAX_GENERATION_ATTEMPTS because the
+        # fact of interest is "the answer had to be rewritten", not "the cap was hit".
+        if state.get("generation_attempts", 1) > 1:
+            return CONFIDENCE_LOW
+        if relevance == RELEVANCE_RELEVANT and state.get("iteration_count", 0) == 0:
+            return CONFIDENCE_HIGH
+        return CONFIDENCE_MEDIUM
+
+    @staticmethod
+    def annotate_with_confidence(answer: str, confidence: str) -> str:
+        """Append the student-facing confidence note to an answer.
+
+        Args:
+            answer (str): Answer produced by the graph.
+            confidence (str): Level returned by :meth:`derive_confidence`.
+
+        Returns:
+            str: The answer with its note appended, or the answer untouched when the
+            level has no note — CONFIDENCE_NOT_APPLICABLE, an empty answer, or an
+            unknown level. Returning the input unchanged is the safe degradation here:
+            a missing note costs the student a hint, a wrong one costs them trust.
+        """
+        note = CONFIDENCE_NOTES.get(confidence)
+        if not note or not answer.strip():
+            return answer
+        return f"{answer.rstrip()}{CONFIDENCE_NOTE_SEPARATOR}{note}"
+
     def build_graph(self):
         """Compile the RAG state graph, with or without the agentic nodes.
 
@@ -741,7 +865,13 @@ class LLMProcessorOllama(BaseLLMProcessor):
             context (List[str]): List of text chunks to use as context.
 
         Returns:
-            str: The answer or an error message if processing fails.
+            str: The answer or an error message if processing fails. When the CRAG/
+            Self-RAG nodes are wired in, a confidence note is appended to the answer
+            text; see :meth:`derive_confidence`. The return type stays ``str`` on
+            purpose — the API, the email delivery loop and
+            ``resources/eval/run_baseline.py`` all consume this value directly, and the
+            confidence level is meant for the student reading the email, who never sees
+            anything but this string.
         """
         try:
             logging.info(f"Processing question: {question} with {len(context)} context chunks")
@@ -773,6 +903,20 @@ class LLMProcessorOllama(BaseLLMProcessor):
                 "generation_attempts": 0
             })
             answer = final_state.get("answer") or ""
+
+            # Confidence is a property of the CRAG/Self-RAG signals, so it only exists
+            # on the agentic path. The classic graph has no relevance verdict and no
+            # grounding verdict to derive one from, and it is what the baseline harness
+            # measures, so it must keep returning the generator's text untouched.
+            if self.grader_llm is not None:
+                confidence = self.derive_confidence(final_state)
+                logging.info(f"Answer confidence level: {confidence} "
+                             f"(relevance={final_state.get('relevance')}, "
+                             f"reformulations={final_state.get('iteration_count', 0)}, "
+                             f"grounding={final_state.get('grounding')}, "
+                             f"generations={final_state.get('generation_attempts', 0)})")
+                answer = self.annotate_with_confidence(answer, confidence)
+
             logging.info(f"Answer generated: {answer[:100]}...")
             return answer
 

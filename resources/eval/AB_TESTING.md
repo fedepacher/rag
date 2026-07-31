@@ -14,6 +14,74 @@ the two and writes a Markdown report.
 > 2. The four quality scores — assigned by hand after the runs. The comparison
 >    reports latency and short-circuit behaviour today; the quality section stays
 >    blocked until instructors fill `scores` in both files.
+>
+> A third blocker is a *decision*, not a missing artifact: the "v1.0" this was
+> supposed to be compared against is not runnable code any more. See the next
+> section.
+
+## Open methodological gap: there is no runnable "v1.0"
+
+**This one needs a decision before the results can be written up. It is not a bug
+in the tooling — no amount of code in this directory can close it.**
+
+Issue #18 asks to compare the full CRAG+Self-RAG pipeline against "the original
+v1.0 system". That system was Mistral 7B, `k=2`, a LangChain `RetrievalQA` chain
+and no verification of any kind. **It no longer exists as runnable code on this
+branch.** Each migration replaced it *in place* rather than keeping it as a
+configurable variant:
+
+| Commit | Change | Kept as an option? |
+|--------|--------|--------------------|
+| `d83bfd6` (#11) | Ollama model `mistral` → `llama3.1:8b-instruct-q4_K_M`, plus the Phi-3.5-mini control model | No — the model tag is a module constant |
+| `886491b` (#12) | Retrieval depth `k=2` → `k=4` | No — `RETRIEVAL_K` is a module constant |
+| `fafaf05` (#14) | `RetrievalQA` chain → LangGraph `StateGraph` | No — the chain was deleted |
+
+So `--no-crag` is **not** v1.0. It is the #13 baseline: Llama 3.1 8B, `k=4`,
+LangGraph, no CRAG and no Self-RAG. It isolates exactly one variable — the
+agentic layer — which is a cleaner experiment than #18 asked for, but it cannot
+support any sentence containing the words "compared to the original system".
+
+The last commit where v1.0 is intact is **`87ca5f3`** (`refactor: stored the
+indexes in local`), the parent of `d83bfd6`. Verified there: `model = "mistral"`,
+`search_kwargs={"k": 2}`, `RetrievalQA.from_chain_type`, `num_ctx=6000`,
+`temperature=0.0`, `context_length=5000`, and no `resources/eval/` directory at
+all.
+
+### Two ways out, both with costs
+
+Neither is chosen here. Pick one before the results section is written.
+
+**A. Actually measure v1.0.** Check `87ca5f3` out into a separate worktree and run
+the dataset against it.
+
+- Cost: `run_baseline.py` did not exist at `87ca5f3` and imports
+  `build_ollama_processor` and the model constants from `rag/main.py`, which did
+  not exist either — the Ollama wiring was inline in `main()`. The harness has to
+  be backported, or a thin equivalent written against the old `LLMProcessorOllama`.
+  Either way the record has to be written by hand into the v2 shape
+  (`pipeline: "v1.0"` is not a label `eval_io.py` knows; adding it means extending
+  `PIPELINE_FILE_PREFIX` and teaching `compare_runs.py` a third arm).
+- Also: `mistral` has to be pulled into the Ollama volume again (~4 GB), the run
+  has to happen on the same box under the same conditions as the other two arms,
+  and the "run classic first" ordering constraint below now applies to three runs.
+- Buys: the comparison #18 literally asks for. Confounded, though — it moves the
+  model, `k`, the orchestration layer *and* the agentic layer at once, so a delta
+  cannot be attributed to any one of them.
+
+**B. Redefine the reference point.** Declare the #13 baseline (Llama 3.1 8B,
+`k=4`, no CRAG/Self-RAG) the de facto reference and say so explicitly wherever
+results are reported.
+
+- Cost: no claim about v1.0 is defensible. The migration in #11/#12 stays an
+  unmeasured change; if the model swap is what actually improved the answers, this
+  comparison will never show it.
+- Buys: a two-arm experiment with exactly one variable moving, which is the
+  comparison the existing tooling was built for and the only one it can produce
+  without new code.
+
+Whichever is chosen, **write it down next to the numbers.** The failure mode this
+section exists to prevent is a results table labelled "vs. v1.0" that was actually
+produced by `--no-crag`.
 
 ## Quick path
 
@@ -45,7 +113,7 @@ docker compose exec rag python resources/eval/run_baseline.py --crag --dry-run
 | Arm | Flag | Pipeline | Output |
 |-----|------|----------|--------|
 | Classic | *(default)* or `--no-crag` | `retrieve → generate`. Control model never loaded. | `results/baseline_<model>_k<k>.jsonl` |
-| CRAG | `--crag` | `retrieve → grade → (reformulate → retrieve)* → generate \| out_of_scope` | `results/crag_<model>_k<k>.jsonl` |
+| CRAG | `--crag` | `retrieve → grade → (reformulate → retrieve)* → generate → verify → (regenerate)? `, ending in an answer with a confidence note, `out_of_scope`, or the ungrounded fallback | `results/crag_<model>_k<k>.jsonl` |
 
 Both arms run through the same `measure()` on the same `process_questionnaire`
 entry point, which is why this is one script and not two. A comparison between two
@@ -111,6 +179,38 @@ the state update untouched, so the measured pipeline is the production pipeline.
 
 They are installed before the first question, because `build_graph` captures the
 node callables when `ask_question` lazily compiles the graph.
+
+## Confidence level: it changes what `generated_answer` contains
+
+Since #18, the CRAG arm appends a confidence note to every answer it produces, so
+`generated_answer` in a `crag_*.jsonl` record is **the answer plus its note**, not
+the generator's raw text. Classic records are unaffected — the classic graph has no
+relevance or grounding verdict to derive a level from, so it returns the generator's
+text untouched.
+
+| Level | Derived from | Note appended |
+|-------|--------------|---------------|
+| `alta` | `relevante` on the first retrieval, grounded on the first generation | Yes |
+| `media` | Grounded, but `parcialmente_relevante` **or** a CRAG reformulation was needed | Yes |
+| `baja` | Grounded only on the second generation pass (the verifier rejected the first) | Yes |
+| `no_aplica` | The out-of-scope or ungrounded fallback fired | **No** |
+
+Consequences for the tooling, none of which required a code change:
+
+- `is_out_of_scope()` compares against `OUT_OF_SCOPE_ANSWER` verbatim and still
+  works: `no_aplica` appends nothing, so both fallbacks stay byte-for-byte equal to
+  their constants.
+- `pipeline_error` tests `startswith("Error:")`. The note is a suffix, so error
+  detection is unaffected.
+- **Scoring `precision` and `claridad` by hand:** score the answer, not the note.
+  The note is the same three sentences on every record at a given level; letting it
+  move a score would be scoring the feature rather than the answer.
+
+The level is **not** recorded as its own field. Doing that needs the grounding
+verdicts, and `CragInstrumentation` does not wrap `verify_grounding_node` yet — the
+Self-RAG counters and the ungrounded-fallback rate are still unimplemented (see
+"Next step"). Until then the level is only visible inside `generated_answer`, and
+splitting a record's answer on `\n\n---\n` recovers the bare text.
 
 ## Reading the report
 
@@ -188,7 +288,19 @@ can run the comparison on a laptop that could never host the pipeline.
 
 ## Next step
 
-Issue #17 adds the Self-RAG grounding-verification node and #18 extends this
-tooling to a three-way comparison with a confidence-level field. The seams are
-already in place: `pipeline` is a label rather than a boolean, and
-`build_output_path` takes the pipeline as an argument.
+The confidence level (#18) landed in the pipeline. What is still open, in order:
+
+1. **Decide the reference point** — option A or option B above. Everything below
+   depends on it.
+2. **Self-RAG counters.** `CragInstrumentation` wraps `retrieve_node`,
+   `grade_relevance_node` and `reformulate_query_node`. It does not wrap
+   `verify_grounding_node` or `generate_node`, so grounding verdicts, regeneration
+   count, ungrounded-fallback rate and the confidence level are not recorded as
+   fields. Same wrapping technique, two more nodes, plus a `self_rag` block next to
+   `crag` and a bump to `SCHEMA_VERSION`.
+3. **Run the dataset**, once instructors deliver `dataset.jsonl`.
+
+The seams for a third arm are already in place: `pipeline` is a label rather than a
+boolean, and `build_output_path` takes the pipeline as an argument — but a `v1.0`
+label would still need adding to `PIPELINE_FILE_PREFIX` and teaching
+`compare_runs.py` to diff three files instead of two.
