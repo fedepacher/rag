@@ -111,6 +111,102 @@ OUT_OF_SCOPE_ANSWER = (
     "la cátedra, o consultarla directamente con el docente."
 )
 
+# --- Self-RAG (grounding verification) ---------------------------------------
+
+# The two verdicts the grounding verifier can produce. Plain strings for the same
+# reasons as the relevance verdicts: they travel inside the TypedDict and the grader
+# answers in Spanish with exactly these words.
+GROUNDING_GROUNDED = "fundamentada"
+GROUNDING_UNGROUNDED = "no_fundamentada"
+
+# Total number of generation passes allowed per question, i.e. one first attempt plus
+# MAX_GENERATION_ATTEMPTS - 1 grounding retries. Two is a deliberate compromise:
+#
+# * Going straight to the fallback on the first failed verification would let a single
+#   3.8B grader veto an answer the classic pipeline would have sent. parse_grounding
+#   already leans towards keeping the answer for that reason, and a false "no
+#   fundamentada" on a correct answer is the expensive mistake here — the student gets
+#   a refusal instead of the material.
+# * Retrying blindly would be close to useless: the generator runs at
+#   OLLAMA_TEMPERATURE = 0.0, so re-running the *same* prompt over the *same* chunks
+#   reproduces the same text and burns a full Llama call on a CPU-only box for nothing.
+#   The retry therefore uses GROUNDED_RETRY_PROMPT, a different prompt, which is what
+#   makes a different answer possible at all at temperature 0.
+# * More than one retry multiplies the slowest call in the pipeline. Llama is the
+#   expensive model (Phi verification is cheap by comparison); if the stricter prompt
+#   did not fix the grounding, a third pass is far more likely to cost another minute
+#   than to succeed. Worst case per question stays at 2 Llama calls + 2 Phi checks.
+MAX_GENERATION_ATTEMPTS = 2
+
+# Characters of the generated answer handed to the verifier. Chunk previews already
+# take GRADER_CHUNK_PREVIEW_CHARS * RETRIEVAL_K characters of the grader's num_ctx, and
+# an answer that overflows it would push the *instructions* out of the window, which
+# turns the verifier into a random verdict generator. Checking a truncated answer is
+# strictly better than that.
+GRADER_ANSWER_MAX_CHARS = 3000
+
+GROUNDING_PROMPT = """
+Eres un verificador de un sistema de preguntas y respuestas sobre documentos.
+Tu única tarea es decidir si la RESPUESTA está respaldada por los FRAGMENTOS.
+No respondas la pregunta, no la corrijas ni expliques tu decisión.
+
+Criterios:
+- fundamentada: todo lo que afirma la respuesta aparece en los fragmentos. Admitir que
+  no se sabe la respuesta también cuenta como fundamentada.
+- no_fundamentada: la respuesta agrega datos, cifras, fórmulas, nombres, definiciones o
+  conclusiones que no aparecen en los fragmentos.
+
+Responde con UNA sola palabra, exactamente una de estas dos:
+fundamentada
+no_fundamentada
+
+FRAGMENTOS:
+{context}
+
+PREGUNTA: {question}
+
+RESPUESTA A VERIFICAR:
+{answer}
+
+Clasificación:
+"""
+
+# Generation prompt used only on a grounding retry. Keeps INITIAL_PROMPT's contract
+# (same variables, same "No sé la respuesta..." escape hatch) and adds the explicit
+# grounding rules. The prompt has to differ from INITIAL_PROMPT for the retry to be
+# worth its cost: see MAX_GENERATION_ATTEMPTS.
+GROUNDED_RETRY_PROMPT = """
+Eres un asistente experto que solo puede responder preguntas utilizando **únicamente** la información contenida en el documento a continuación.
+Un intento anterior de responder esta pregunta fue descartado porque afirmaba cosas que no estaban en el documento.
+
+Reglas estrictas:
+- No uses conocimientos previos ni hagas inferencias que el documento no respalde.
+- No agregues cifras, fórmulas, nombres, normas ni ejemplos que no aparezcan en el documento.
+- Cada afirmación de tu respuesta debe poder señalarse en el documento.
+- Prefiere una respuesta corta y verificable antes que una completa pero especulativa.
+- Si la información no está presente explícitamente en el documento, responde únicamente:
+**"No sé la respuesta basada en la información proporcionada."**
+
+DOCUMENTO:
+{context}
+
+Pregunta: {question}
+Respuesta:
+"""
+
+# Returned when the generated answer could not be verified against the retrieved chunks.
+# Distinct from OUT_OF_SCOPE_ANSWER because the failure is a different one: out of scope
+# means the bibliography does not cover the question, ungrounded means it may well cover
+# it but what the generator wrote could not be traced back to it. Like OUT_OF_SCOPE_ANSWER
+# it deliberately does not start with "Error:" — withholding an unverifiable answer is the
+# safety mechanism working, not a pipeline failure.
+UNGROUNDED_FALLBACK_ANSWER = (
+    "No puedo responder esta consulta con el material disponible. Elaboré una respuesta "
+    "pero no logré verificar que estuviera respaldada por la bibliografía del curso, y "
+    "prefiero no enviarte información que podría ser incorrecta. Te sugiero reformular la "
+    "pregunta siendo más específico, o consultarla directamente con el docente."
+)
+
 
 class RAGGraphState(TypedDict):
     """State carried through the LangGraph RAG pipeline.
@@ -130,8 +226,20 @@ class RAGGraphState(TypedDict):
             processor runs without a grader model.
         iteration_count (int): Number of query reformulations performed so far, capped
             at MAX_CRAG_ITERATIONS.
-        answer (Optional[str]): Text produced by the generation or out-of-scope node,
-            None until then.
+        answer (Optional[str]): Text produced by the generation, out-of-scope or
+            ungrounded node, None until then.
+        grounding (Optional[str]): Verdict of the Self-RAG verification node for the
+            current answer, GROUNDING_GROUNDED or GROUNDING_UNGROUNDED. None before the
+            first verification, and always None when the processor runs without a grader
+            model. Also read by the generation node, which switches to
+            GROUNDED_RETRY_PROMPT once a previous answer failed verification.
+        generation_attempts (int): Number of generation passes performed so far, capped
+            at MAX_GENERATION_ATTEMPTS. Deliberately *not* folded into
+            ``iteration_count``: that one bounds the CRAG loop, which re-queries the
+            retriever with a rewritten query, while this one bounds the Self-RAG loop,
+            which regenerates from the *same* chunks. They are different loops with
+            different costs, they can both run for the same question, and sharing a
+            counter would silently let one starve the other.
     """
 
     question: str
@@ -140,6 +248,8 @@ class RAGGraphState(TypedDict):
     relevance: Optional[str]
     iteration_count: int
     answer: Optional[str]
+    grounding: Optional[str]
+    generation_attempts: int
 
 
 class BaseLLMProcessor:
@@ -171,24 +281,28 @@ class LLMProcessorOllama(BaseLLMProcessor):
       classic RAG behaviour the baseline harness measures, and it stays reachable on
       purpose so the pre-CRAG reference point does not disappear.
     * ``grader_llm`` set -> the CRAG correction loop, with relevance grading, bounded
-      query reformulation and the out-of-scope short-circuit.
+      query reformulation and the out-of-scope short-circuit, followed by the Self-RAG
+      grounding verification of the generated answer.
 
     Args:
         llm: Generation model (Llama 3.1 8B in production).
         embedding: Embedding model backing the FAISS vector store.
         context_length: Character budget used to chunk the course documents.
         grader_llm: Small control model (Phi-3.5-mini in production) used by the CRAG
-            nodes to grade relevance and rewrite queries. A single instance is shared
-            by both nodes; do not create one per node, both models stay resident.
+            and Self-RAG nodes to grade relevance, rewrite queries and verify that the
+            answer is grounded. A single instance is shared by every control node; do
+            not create one per node, both models stay resident.
     """
 
     def __init__(self, llm, embedding, context_length, grader_llm=None):
         super().__init__(llm, embedding, context_length)
         self.vectorstore = None
         self.qa_chain_prompt = PromptTemplate.from_template(INITIAL_PROMPT)
+        self.grounded_retry_prompt = PromptTemplate.from_template(GROUNDED_RETRY_PROMPT)
         self.grader_llm = grader_llm
         self.relevance_prompt = PromptTemplate.from_template(RELEVANCE_PROMPT)
         self.reformulation_prompt = PromptTemplate.from_template(REFORMULATION_PROMPT)
+        self.grounding_prompt = PromptTemplate.from_template(GROUNDING_PROMPT)
         self.graph = None
 
     @staticmethod
@@ -405,42 +519,183 @@ class LLMProcessorOllama(BaseLLMProcessor):
     def generate_node(self, state: RAGGraphState) -> Dict[str, Any]:
         """Graph node: stuff the retrieved chunks into the prompt and call the LLM.
 
+        Re-entered by the Self-RAG loop when the previous answer failed grounding
+        verification, in which case the stricter GROUNDED_RETRY_PROMPT is used instead of
+        INITIAL_PROMPT: the generator runs at temperature 0, so re-sending the same
+        prompt would reproduce the same answer and the retry would be pure cost.
+
+        Increments ``generation_attempts`` unconditionally, so the Self-RAG loop is
+        bounded by construction and cannot spin.
+
         Args:
-            state (RAGGraphState): Current graph state, read for its question and
-                retrieved documents.
+            state (RAGGraphState): Current graph state, read for its question, retrieved
+                documents and previous grounding verdict.
 
         Returns:
-            Dict[str, Any]: State update carrying the generated answer.
+            Dict[str, Any]: State update carrying the generated answer and the attempt
+            count.
         """
         question = state["question"]
         retrieved_docs = state["retrieved_docs"]
+        generation_attempts = state.get("generation_attempts", 0) + 1
         context = DOCUMENT_SEPARATOR.join(document.page_content for document in retrieved_docs)
-        prompt = self.qa_chain_prompt.format(context=context, question=question)
+
+        if state.get("grounding") == GROUNDING_UNGROUNDED:
+            logging.info(f"Self-RAG regeneration {generation_attempts}/{MAX_GENERATION_ATTEMPTS} "
+                         f"with the strict grounding prompt")
+            prompt = self.grounded_retry_prompt.format(context=context, question=question)
+        else:
+            prompt = self.qa_chain_prompt.format(context=context, question=question)
 
         logging.debug("Waiting for LLM response")
         llm_response = self.llm.invoke(prompt)
         answer = llm_response if isinstance(llm_response, str) else str(llm_response)
-        return {"answer": answer}
+        return {"answer": answer, "generation_attempts": generation_attempts}
+
+    @staticmethod
+    def parse_grounding(grader_response: Any) -> str:
+        """Map a free-form verifier answer onto one of the two grounding verdicts.
+
+        Same defensive treatment as :meth:`parse_relevance`, and the same substring trap:
+        "no_fundamentada" contains "fundamentada", so the negative form has to be tested
+        first. The normalisation turns underscores and hyphens into spaces, which is what
+        lets a single pattern cover "no_fundamentada", "no fundamentada" and "no está
+        fundamentada".
+
+        Args:
+            grader_response (Any): Raw value returned by the grader LLM.
+
+        Returns:
+            str: GROUNDING_GROUNDED or GROUNDING_UNGROUNDED. An empty or unparseable
+            answer falls back to GROUNDING_GROUNDED, the verdict that keeps the answer:
+            a confused verifier must never be able to withhold an answer the classic
+            pipeline would have sent. Self-RAG is a safety net, and a torn net has to
+            let the pipeline through rather than block it.
+        """
+        text = re.sub(r"[\s_\-*`.:,;]+", " ", str(grader_response or "").lower()).strip()
+        if not text:
+            logging.warning("Grounding verifier returned an empty answer; assuming the answer is grounded")
+            return GROUNDING_GROUNDED
+        if "infundad" in text or re.search(r"\bno\s+(?:\w+\s+){0,3}fundamentada", text):
+            return GROUNDING_UNGROUNDED
+        if "fundamentada" in text:
+            return GROUNDING_GROUNDED
+        logging.warning(f"Unparseable grounding verdict '{text[:80]}'; assuming the answer is grounded")
+        return GROUNDING_GROUNDED
+
+    def verify_grounding_node(self, state: RAGGraphState) -> Dict[str, Any]:
+        """Graph node: ask the control model whether the answer is supported by the chunks.
+
+        This is the Self-RAG component: it does not judge whether the answer is *good*,
+        only whether every claim in it can be traced back to the retrieved context. An
+        answer that admits it does not know is grounded by definition — INITIAL_PROMPT
+        forces exactly that wording, and flagging it would spend two Llama calls to
+        replace one honest refusal with another.
+
+        Args:
+            state (RAGGraphState): Current graph state, read for its question, retrieved
+                documents and generated answer.
+
+        Returns:
+            Dict[str, Any]: State update carrying the grounding verdict.
+        """
+        answer = state.get("answer") or ""
+        retrieved_docs = state["retrieved_docs"]
+        if not answer.strip() or not retrieved_docs:
+            # Unreachable in the CRAG graph (an empty retrieval is graded irrelevant and
+            # short-circuits before generation), but a verifier call with nothing to
+            # compare against would only produce noise.
+            logging.warning("Grounding verification skipped: no answer or no retrieved chunk")
+            return {"grounding": GROUNDING_GROUNDED}
+
+        context = DOCUMENT_SEPARATOR.join(document.page_content[:GRADER_CHUNK_PREVIEW_CHARS]
+                                          for document in retrieved_docs)
+        prompt = self.grounding_prompt.format(context=context,
+                                              question=state["question"],
+                                              answer=answer[:GRADER_ANSWER_MAX_CHARS])
+
+        logging.debug("Waiting for the grounding verifier")
+        try:
+            grader_response = self.grader_llm.invoke(prompt)
+        except Exception as err:
+            # Same contract as relevance grading: the control model is an enhancement,
+            # not a dependency. If it is down the answer ships unverified rather than
+            # the student getting a refusal for an infrastructure problem.
+            logging.error(f"Grounding verification failed, keeping the answer: {err}", exc_info=True)
+            return {"grounding": GROUNDING_GROUNDED}
+
+        grounding = self.parse_grounding(grader_response)
+        logging.info(f"Self-RAG grounding verdict: {grounding} "
+                     f"(attempt {state.get('generation_attempts', 0)}/{MAX_GENERATION_ATTEMPTS})")
+        return {"grounding": grounding}
+
+    def ungrounded_node(self, state: RAGGraphState) -> Dict[str, Any]:
+        """Graph node: withhold an answer that could not be grounded in the material.
+
+        Terminal alternative to shipping the generated text. Reached only after every
+        allowed generation attempt failed verification, so the student gets an explicit
+        "I cannot answer this with the available material" instead of content the system
+        itself could not trace back to the bibliography.
+
+        Args:
+            state (RAGGraphState): Current graph state, read for its question.
+
+        Returns:
+            Dict[str, Any]: State update carrying the ungrounded fallback answer.
+        """
+        logging.warning(f"Self-RAG could not ground the answer after {MAX_GENERATION_ATTEMPTS} attempt(s); "
+                        f"withholding it for: {state['question']}")
+        return {"answer": UNGROUNDED_FALLBACK_ANSWER}
+
+    def route_after_grounding(self, state: RAGGraphState) -> str:
+        """Conditional edge: pick the successor of the grounding verification node.
+
+        A grounded answer ends the run. An ungrounded one is regenerated once with the
+        strict prompt, and if that fails too the fallback answer is sent: retrying more
+        would multiply the slowest call in the pipeline for a case that already resisted
+        the strictest prompt available.
+
+        Args:
+            state (RAGGraphState): Current graph state, read for its grounding verdict
+                and generation attempt count.
+
+        Returns:
+            str: END, or the name of the next node: "generate" or "ungrounded".
+        """
+        if (state.get("grounding") or GROUNDING_GROUNDED) == GROUNDING_GROUNDED:
+            return END
+        if state.get("generation_attempts", 0) < MAX_GENERATION_ATTEMPTS:
+            return "generate"
+        return "ungrounded"
 
     def build_graph(self):
-        """Compile the RAG state graph, with or without the CRAG correction loop.
+        """Compile the RAG state graph, with or without the agentic nodes.
 
         Without a grader model the graph is the linear pipeline the LangGraph migration
-        introduced, which is what the baseline harness measures::
+        introduced, which is what the baseline harness measures. Generation is terminal:
+        no relevance grading and no grounding verification, exactly as before::
 
             START -> retrieve -> generate -> END
 
-        With one, the CRAG mechanism is wired in::
+        With one, both the CRAG correction loop and the Self-RAG grounding verification
+        are wired in::
 
             START -> retrieve -> grade_relevance
-            grade_relevance -[relevante | parcialmente_relevante]-> generate -> END
-            grade_relevance -[irrelevante, iteration_count <  MAX]-> reformulate_query -> retrieve
-            grade_relevance -[irrelevante, iteration_count >= MAX]-> out_of_scope -> END
+            grade_relevance -[relevante | parcialmente_relevante]-> generate
+            grade_relevance -[irrelevante, iteration_count <  MAX_CRAG]-> reformulate_query -> retrieve
+            grade_relevance -[irrelevante, iteration_count >= MAX_CRAG]-> out_of_scope -> END
+            generate -> verify_grounding
+            verify_grounding -[fundamentada]-> END
+            verify_grounding -[no_fundamentada, generation_attempts <  MAX_GEN]-> generate
+            verify_grounding -[no_fundamentada, generation_attempts >= MAX_GEN]-> ungrounded -> END
 
-        The loop is bounded by ``reformulate_query`` being the only node that increments
-        ``iteration_count``, so the longest possible walk is 3 retrievals, 3 grades and
-        2 reformulations: well inside LangGraph's default recursion limit. Self-RAG
-        grounding verification is a follow-up issue and is in neither shape.
+        Both loops are bounded by the node that closes them incrementing its own counter
+        unconditionally: ``reformulate_query`` for ``iteration_count`` and ``generate``
+        for ``generation_attempts``. The counters are separate on purpose, so a question
+        that spent its reformulations still gets its grounding retry. The longest
+        possible walk is 3 retrievals, 3 relevance grades, 2 reformulations, 2
+        generations, 2 verifications and the fallback node: 13 steps, well inside
+        LangGraph's default recursion limit of 25.
 
         Returns:
             CompiledStateGraph: Graph ready to be invoked with a RAGGraphState.
@@ -449,15 +704,17 @@ class LLMProcessorOllama(BaseLLMProcessor):
         workflow.add_node("retrieve", self.retrieve_node)
         workflow.add_node("generate", self.generate_node)
         workflow.add_edge(START, "retrieve")
-        workflow.add_edge("generate", END)
 
         if self.grader_llm is None:
             workflow.add_edge("retrieve", "generate")
+            workflow.add_edge("generate", END)
             return workflow.compile()
 
         workflow.add_node("grade_relevance", self.grade_relevance_node)
         workflow.add_node("reformulate_query", self.reformulate_query_node)
         workflow.add_node("out_of_scope", self.out_of_scope_node)
+        workflow.add_node("verify_grounding", self.verify_grounding_node)
+        workflow.add_node("ungrounded", self.ungrounded_node)
         workflow.add_edge("retrieve", "grade_relevance")
         workflow.add_conditional_edges("grade_relevance", self.route_after_grading, {
             "generate": "generate",
@@ -466,6 +723,13 @@ class LLMProcessorOllama(BaseLLMProcessor):
         })
         workflow.add_edge("reformulate_query", "retrieve")
         workflow.add_edge("out_of_scope", END)
+        workflow.add_edge("generate", "verify_grounding")
+        workflow.add_conditional_edges("verify_grounding", self.route_after_grounding, {
+            END: END,
+            "generate": "generate",
+            "ungrounded": "ungrounded"
+        })
+        workflow.add_edge("ungrounded", END)
         return workflow.compile()
 
     def ask_question(self, question: str, context: List[str]) -> str:
@@ -493,7 +757,7 @@ class LLMProcessorOllama(BaseLLMProcessor):
             if self.graph is None:
                 self.graph = self.build_graph()
                 logging.debug(f"LangGraph RAG state graph compiled "
-                              f"(CRAG {'enabled' if self.grader_llm is not None else 'disabled'})")
+                              f"(CRAG/Self-RAG {'enabled' if self.grader_llm is not None else 'disabled'})")
 
             # Run the graph
             final_state = self.graph.invoke({
@@ -504,7 +768,9 @@ class LLMProcessorOllama(BaseLLMProcessor):
                 "retrieved_docs": [],
                 "relevance": None,
                 "iteration_count": 0,
-                "answer": None
+                "answer": None,
+                "grounding": None,
+                "generation_attempts": 0
             })
             answer = final_state.get("answer") or ""
             logging.info(f"Answer generated: {answer[:100]}...")
