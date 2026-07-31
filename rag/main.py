@@ -10,11 +10,45 @@ from langchain_community.llms import OpenLLM
 
 from rag.message_clients import APIClient, MessageClient
 from rag.document_loader import LocalDocumentLoader
-from llm_processor import (BaseLLMProcessor, LLMProcessorOllama, LLMProcessorOpenLLM, LLMProcessorHuggingFace,
-                           LLMProcessorOpenAI)
+from rag.llm_processor import (BaseLLMProcessor, LLMProcessorOllama, LLMProcessorOpenLLM, LLMProcessorHuggingFace,
+                               LLMProcessorOpenAI)
 
 
 RESTART_AFTER_EXCEPTION_DELAY_SEC = 60
+
+# Ollama backend configuration. Kept as module-level constants so that offline tooling
+# (e.g. resources/eval/run_baseline.py) measures exactly the same pipeline that runs in
+# production instead of re-declaring these values and silently drifting away from it.
+OLLAMA_MODEL = "llama3.1:8b-instruct-q4_K_M"
+OLLAMA_HOST = "http://localhost:11434"
+OLLAMA_TEMPERATURE = 0.0
+OLLAMA_TOP_P = 0.9
+OLLAMA_NUM_CTX = 6000
+OLLAMA_CONTEXT_LENGTH = 5000
+
+
+def build_ollama_processor() -> LLMProcessorOllama:
+    """Build the Ollama-backed processor used by the default pipeline.
+
+    Returns:
+        LLMProcessorOllama: Processor wired to the local Ollama server with
+        GPT4All embeddings and a FAISS vector store.
+    """
+    from langchain.llms import Ollama
+    from langchain.embeddings import GPT4AllEmbeddings
+    # from langchain.embeddings import OllamaEmbeddings
+
+    llm = Ollama(model=OLLAMA_MODEL,
+                 base_url=OLLAMA_HOST,
+                 temperature=OLLAMA_TEMPERATURE,
+                 top_p=OLLAMA_TOP_P,
+                 num_ctx=OLLAMA_NUM_CTX)
+    # embedding = OllamaEmbeddings(
+    #     model=OLLAMA_MODEL,
+    #     base_url=OLLAMA_HOST
+    # )
+    embedding = GPT4AllEmbeddings()
+    return LLMProcessorOllama(llm, embedding, OLLAMA_CONTEXT_LENGTH)
 
 
 class MessageProcessor:
@@ -110,23 +144,7 @@ def main(api_url, document_location, mongo_host, mongo_port, mongo_user, mongo_p
     else:
         logging.debug("LLM source set to: Ollama")
         # Local LLM hosted with Ollama
-        from langchain.llms import Ollama
-        from langchain.embeddings import GPT4AllEmbeddings
-        # from langchain.embeddings import OllamaEmbeddings
-        model = "llama3.1:8b-instruct-q4_K_M"
-        host = "http://localhost:11434"
-        llm = Ollama(model=model,
-            base_url=host,
-            temperature=0.0,
-            top_p=0.9,
-            num_ctx=6000)
-        context_length = 5000
-        # embedding = OllamaEmbeddings(
-        #     model=model,
-        #     base_url=host
-        # )
-        embedding = GPT4AllEmbeddings()
-        llm_processor = LLMProcessorOllama(llm, embedding, context_length)
+        llm_processor = build_ollama_processor()
         assert requests.get(url=ollama_server_url).ok, "Ollama is not running"
 
     message_processor = MessageProcessor(api_client, document_loader, mongo_collection, llm_processor)
