@@ -386,7 +386,16 @@ class LLMProcessorOllama(BaseLLMProcessor):
 
     def build_or_load_vectorstore(self, context: list[str]):
         if os.path.exists(FAISS_INDEX_PATH) and not self.document_has_changed(context):
-            self.vectorstore = FAISS.load_local(FAISS_INDEX_PATH, self.embedding)
+            # allow_dangerous_deserialization is required because a FAISS index is a
+            # pickle, and langchain-community >= 0.0.27 refuses to unpickle one unless
+            # the caller vouches for its origin. This index is never downloaded: the
+            # else-branch below writes it with save_local from the course documents in
+            # DOCUMENT_LOCATION, and document_has_changed gates this load path on a
+            # SHA-256 of that same content. The file we are trusting is the one this
+            # process produced.
+            self.vectorstore = FAISS.load_local(
+                FAISS_INDEX_PATH, self.embedding, allow_dangerous_deserialization=True
+            )
         else:
             if os.path.exists(FAISS_INDEX_PATH):
                 shutil.rmtree(FAISS_INDEX_PATH, ignore_errors=True)
