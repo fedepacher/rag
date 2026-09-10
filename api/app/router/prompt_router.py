@@ -1,5 +1,5 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, Body, status, Query, Path
+from fastapi import APIRouter, Depends, Body, status, Query, Path, Response
 from typing import List, Optional
 
 from api.app.schema import prompt_schema
@@ -32,4 +32,8 @@ def input_prompt(prompt: prompt_schema.Prompt=Body(...),
     # dependencies=[Depends(get_db)]
 )
 async def get_all_prompts():
-    return await prompt_service.get_prompts()
+    prompt = await prompt_service.get_prompts()
+    if prompt is None:
+        # Empty queue: no content, not an error. See prompt_service.get_prompts.
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return prompt

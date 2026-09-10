@@ -44,12 +44,18 @@ async def get_prompts():
     # Query for documents where output is None and sort by date_in
     try:
         document = mongo_collection.find_one({'output': None}, sort=[("date_in", ASCENDING)])
-        if document:
-            serialized_prompt = serialize_mongo_document(document)
-            return serialized_prompt
-        else:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
-                                detail="No document found with output=None")
-    except Exception as e:
+    except Exception:
+        logging.exception("Failed to read the prompt queue from MongoDB")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="An error occurred while retrieving prompts.")
+
+    # An empty queue is the normal idle state, not an error. Returning None lets the
+    # router answer 204, which is the branch rag/message_clients.py already implements
+    # (an INFO log and EMPTY_QUEUE_INTERVAL_SEC). Previously the empty case raised a 404
+    # from INSIDE the try above, the bare `except Exception` caught it and re-raised it
+    # as a 500, and the RAG service logged "Received response code 500" every 15 seconds
+    # while nothing at all was wrong.
+    if document is None:
+        return None
+
+    return serialize_mongo_document(document)
