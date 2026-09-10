@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import unicodedata
 import requests
 import hashlib
 import shutil
@@ -163,6 +164,12 @@ GRADER_ANSWER_MAX_CHARS = 3000
 # could be diagnosed from the logs. 1200 characters is enough to see which claim went
 # beyond the sources without turning every refusal into a wall of log.
 REJECTED_DRAFT_LOG_CHARS = 1200
+
+# The escape hatch INITIAL_PROMPT and GROUNDED_RETRY_PROMPT force when the retrieved
+# context does not answer the question. Matched normalised (lower case, punctuation and
+# runs of whitespace collapsed) because the generator reproduces the sentence but not
+# always its markdown or trailing punctuation.
+NO_ANSWER_MARKER = "no se la respuesta basada en la informacion proporcionada"
 
 # How much of a control model's raw reply is logged alongside the parsed verdict.
 # parse_relevance and parse_grounding both fall back to a permissive value on anything
@@ -393,13 +400,43 @@ class LLMProcessorOllama(BaseLLMProcessor):
         self.grounding_prompt = PromptTemplate.from_template(GROUNDING_PROMPT)
         self.graph = None
 
-    @staticmethod
-    def get_text_hash(context: list[str]) -> str:
+    def embedding_fingerprint(self) -> str:
+        """Identify the embedding model that produced the stored vectors.
+
+        Returns:
+            str: Class name and model identifier, e.g. "OllamaEmbeddings:bge-m3". The
+            attribute is read defensively because the embedding classes do not agree on
+            a name for it (``model`` on OllamaEmbeddings, ``model_name`` elsewhere) and
+            some expose neither; an unidentifiable embedding hashes as "?" and simply
+            stops distinguishing that case, which is no worse than not hashing it.
+        """
+        model = getattr(self.embedding, "model", None) or getattr(self.embedding, "model_name", None)
+        return f"{type(self.embedding).__name__}:{model or '?'}"
+
+    def get_index_hash(self, context: list[str]) -> str:
+        """Fingerprint everything the stored index depends on.
+
+        Covers the chunk text AND the embedding model, because a FAISS index is only
+        reusable when both are unchanged. Hashing the text alone -- which is what this
+        did originally -- means swapping the embedding model silently loads vectors
+        from the previous one: at best retrieval degrades to nonsense while looking
+        healthy, at worst the dimensions disagree outright (GPT4AllEmbeddings produces
+        384, bge-m3 produces 1024) and the failure surfaces far from its cause. The
+        index is currently unmounted so a rebuilt image wipes it anyway, but that is an
+        accident of the missing volume, not a guarantee -- and the day the volume is
+        added, this is the bug that would appear.
+
+        Args:
+            context (list[str]): The chunks that would be indexed.
+
+        Returns:
+            str: Hex SHA-256 over the embedding fingerprint and the joined chunks.
+        """
         joined = ''.join(context)
-        return hashlib.sha256(joined.encode('utf-8')).hexdigest()
+        return hashlib.sha256(f"{self.embedding_fingerprint()}\n{joined}".encode('utf-8')).hexdigest()
 
     def document_has_changed(self, context: list[str]) -> bool:
-        new_hash = self.get_text_hash(context)
+        new_hash = self.get_index_hash(context)
         if os.path.exists(DOC_HASH_PATH):
             with open(DOC_HASH_PATH, 'r') as f:
                 old_hash = f.read().strip()
@@ -409,7 +446,7 @@ class LLMProcessorOllama(BaseLLMProcessor):
     def save_hash(self, context: list[str]):
         os.makedirs(FAISS_INDEX_PATH, exist_ok=True)
         with open(DOC_HASH_PATH, 'w') as f:
-            f.write(self.get_text_hash(context))
+            f.write(self.get_index_hash(context))
 
     def build_or_load_vectorstore(self, context: list[str]):
         if os.path.exists(FAISS_INDEX_PATH) and not self.document_has_changed(context):
@@ -615,7 +652,69 @@ class LLMProcessorOllama(BaseLLMProcessor):
         """
         logging.info(f"CRAG exhausted {MAX_CRAG_ITERATIONS} reformulation(s) without relevant context; "
                      f"answering out of scope for: {state['question']}")
-        return {"answer": OUT_OF_SCOPE_ANSWER}
+        # Pin the verdict this node's own existence implies. derive_confidence reads the
+        # terminal state to tell a refusal from an answer, on the invariant "terminal
+        # irrelevante <=> out_of_scope fired". Since route_after_generation can now reach
+        # this node with a relevante verdict on the state, the invariant has to be
+        # asserted by the node that ends the run rather than inferred from the last
+        # grader verdict to survive. Reached from the grading loop this is a no-op.
+        return {"answer": OUT_OF_SCOPE_ANSWER, "relevance": RELEVANCE_IRRELEVANT}
+
+    @staticmethod
+    def is_no_answer(answer: Any) -> bool:
+        """Report whether the generator used the "I don't know" escape hatch.
+
+        Both generation prompts instruct the model to answer *only*
+        ``"No sé la respuesta basada en la información proporcionada."`` when the
+        retrieved context does not contain the answer, so this sentence is not an
+        answer at all: it is the generator reporting that retrieval failed.
+
+        Args:
+            answer (Any): Text produced by the generation node.
+
+        Returns:
+            bool: True when the answer opens with the escape hatch. Anchored at the
+            start rather than searched anywhere in the text, because a real answer
+            that happens to quote the phrase mid-paragraph is still a real answer.
+        """
+        normalised = unicodedata.normalize("NFKD", str(answer or "").lower())
+        stripped = "".join(char for char in normalised if not unicodedata.combining(char))
+        collapsed = re.sub(r"[\s*`_\"'.:,;¿?¡!-]+", " ", stripped).strip()
+        return collapsed.startswith(NO_ANSWER_MARKER)
+
+    def route_after_generation(self, state: RAGGraphState) -> str:
+        """Conditional edge: decide whether the generated text is worth verifying.
+
+        An answer that used the escape hatch does not need Self-RAG: the generator has
+        already reported that the retrieved chunks do not answer the question, having
+        read them in full rather than through the grader's
+        ``GRADER_CHUNK_PREVIEW_CHARS`` window. Sending it to verification wastes the two
+        most expensive calls in the pipeline to arrive at the refusal it already is.
+
+        Measured on 2026-09-10 before this edge existed: Phi-3.5-mini graded that exact
+        sentence ``no_fundamentada`` on both attempts of both refusing questions, in
+        direct contradiction of GROUNDING_PROMPT, which states that admitting ignorance
+        counts as grounded. Each of those questions then burned a second Llama
+        generation and a second verification — R2 took 28 minutes and R5 took 30 — to
+        reach a refusal that was already correct after the first pass. Routing on the
+        generator's own words is deterministic and costs nothing, where relying on a
+        3.8B model to honour a documented instruction demonstrably does not hold.
+
+        Out of scope rather than ungrounded is the honest label: "the material does not
+        cover this" is precisely what the generator said, whereas ungrounded means an
+        answer exists but could not be traced.
+
+        Args:
+            state (RAGGraphState): Current graph state, read for its generated answer.
+
+        Returns:
+            str: "out_of_scope" or "verify_grounding".
+        """
+        if self.is_no_answer(state.get("answer")):
+            logging.info("Generator reported the context does not answer the question; "
+                         "skipping grounding verification and answering out of scope")
+            return "out_of_scope"
+        return "verify_grounding"
 
     def route_after_grading(self, state: RAGGraphState) -> str:
         """Conditional edge: pick the successor of the relevance grading node.
@@ -922,7 +1021,10 @@ class LLMProcessorOllama(BaseLLMProcessor):
         })
         workflow.add_edge("reformulate_query", "retrieve")
         workflow.add_edge("out_of_scope", END)
-        workflow.add_edge("generate", "verify_grounding")
+        workflow.add_conditional_edges("generate", self.route_after_generation, {
+            "verify_grounding": "verify_grounding",
+            "out_of_scope": "out_of_scope"
+        })
         workflow.add_conditional_edges("verify_grounding", self.route_after_grounding, {
             END: END,
             "generate": "generate",
