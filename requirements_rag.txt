@@ -1,22 +1,160 @@
-pymongo
-pypdf2
-langchain
-langchain-community
-langchain-core
-openai
-pypdf2
-tiktoken
-python-docx
-chromadb
-gpt4all
-langchain-ollama
-langchain-openai
-sentence-transformers
-transformers
-faiss-cpu
-# Only pinned entry in this file, on purpose. This repo still uses the LangChain 0.1-era
-# import paths (langchain.chains, langchain.llms, langchain.prompts) that LangChain 1.0
-# removed. langgraph >= 1.2 requires langchain-core >= 1.4.7 and would drag the whole
-# stack past that break; the 0.3 line is the newest one that still declares
-# langchain-core < 0.4, so it cannot force that upgrade.
-langgraph>=0.3,<0.4
+# Fully pinned dependency lock for the `rag` service (Dockerfile-combined).
+#
+# WHY A FULL LOCK: this file previously declared 16 unpinned names. That is not a
+# dependency list, it is a bet that every upstream project stays compatible forever.
+# It already cost us once: LangChain 1.0 removed `langchain.chains`, `langchain.llms`
+# and `langchain.prompts`, which this repo imports throughout, so a fresh build would
+# resolve to a version the code cannot run on.
+#
+# DIRECT DEPENDENCIES (everything else below is a transitive of these):
+#   pymongo pypdf2 python-docx requests typing_extensions
+#   langchain langchain-community langchain-core langgraph
+#   chromadb gpt4all faiss-cpu openai tiktoken
+#
+# langgraph is held below 0.4: it is the newest line that still declares
+# langchain-core < 0.4, so it cannot drag the stack past the LangChain 1.0 break.
+#
+# REMOVED (declared but never imported anywhere in this repo):
+#   sentence-transformers, transformers  -> pulled torch + 20 nvidia CUDA wheels +
+#       triton, 5.5 GB of GPU runtime on a CPU-only target box. Embeddings come from
+#       GPT4AllEmbeddings and inference from Ollama over HTTP; LLMProcessorHuggingFace
+#       posts to a remote endpoint and runs nothing locally.
+#   langchain-ollama, langchain-openai   -> the code imports langchain.llms.Ollama and
+#       langchain.chat_models.ChatOpenAI, which live in langchain / langchain-community.
+#   pypdf2 (duplicate entry)
+# ADDED: requests and typing_extensions, both imported directly but previously
+#   undeclared and arriving only by accident as transitives.
+#
+# VERIFIED: with this exact set, python:3.10-slim imports rag.document_loader,
+# rag.llm_processor, rag.message_clients, rag.main, eval_io, compare_runs and
+# run_baseline without error. site-packages: 901 MB (was 6.4 GB).
+#
+# TO REGENERATE after changing a direct dependency: edit the direct list above, resolve
+# it in a python:3.10-slim container, re-run the import check, then replace the block
+# below with `pip freeze` (minus pip/setuptools/wheel).
+
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+async-timeout==4.0.3
+attrs==26.1.0
+bcrypt==5.0.0
+build==1.6.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+chromadb==1.5.9
+click==8.5.0
+coloredlogs==15.0.1
+dataclasses-json==0.6.7
+distro==1.9.0
+dnspython==2.8.0
+durationpy==0.11
+exceptiongroup==1.3.1
+faiss-cpu==1.15.0
+filelock==3.32.6
+flatbuffers==25.12.19
+frozenlist==1.8.0
+fsspec==2026.7.0
+googleapis-common-protos==1.75.3
+gpt4all==2.8.2
+greenlet==3.5.5
+grpcio==1.83.1
+h11==0.16.0
+hf-xet==1.6.0
+httpcore==1.0.9
+httpcore2==2.12.0
+httptools==0.8.0
+httpx==0.28.1
+httpx2==2.12.0
+httpx-sse==0.4.3
+huggingface_hub==1.30.0
+humanfriendly==10.0
+idna==3.19
+importlib_resources==7.1.0
+jiter==0.16.0
+jsonpatch==1.33
+jsonpointer==3.1.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+kubernetes==36.0.3
+langchain==0.3.30
+langchain-community==0.3.31
+langchain-core==0.3.86
+langchain-text-splitters==0.3.11
+langgraph==0.3.34
+langgraph-checkpoint==2.1.2
+langgraph-prebuilt==0.1.8
+langgraph-sdk==0.1.74
+langsmith==0.12.2
+lxml==6.1.3
+markdown-it-py==4.2.0
+marshmallow==3.26.2
+mdurl==0.1.2
+mmh3==5.3.0
+mpmath==1.3.0
+multidict==6.7.1
+mypy_extensions==1.1.0
+numpy==2.2.6
+oauthlib==3.3.1
+onnxruntime==1.23.2
+openai==3.10.0
+opentelemetry-api==1.44.0
+opentelemetry-exporter-otlp-proto-common==1.44.0
+opentelemetry-exporter-otlp-proto-grpc==1.44.0
+opentelemetry-proto==1.44.0
+opentelemetry-sdk==1.44.0
+opentelemetry-semantic-conventions==0.65b0
+orjson==3.12.0
+ormsgpack==1.12.2
+overrides==7.7.0
+packaging==25.0
+propcache==0.5.2
+protobuf==7.36.1
+pybase64==1.5.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+pydantic-settings==2.15.0
+Pygments==2.21.0
+pymongo==4.18.0
+PyPDF2==3.0.1
+PyPika==0.51.1
+pyproject_hooks==1.2.0
+python-dateutil==2.9.0.post0
+python-docx==1.2.0
+python-dotenv==1.2.3
+PyYAML==6.0.3
+referencing==0.37.0
+regex==2026.9.3
+requests==2.34.2
+requests-oauthlib==2.0.0
+requests-toolbelt==1.0.0
+rich==15.0.0
+rpds-py==0.30.0
+shellingham==1.5.4
+six==1.17.0
+sniffio==1.3.1
+SQLAlchemy==2.0.52
+sympy==1.14.0
+tenacity==9.1.4
+tiktoken==0.14.0
+tokenizers==0.23.2
+tomli==2.4.1
+tqdm==4.70.0
+truststore==0.10.4
+typer==0.27.2
+typing_extensions==4.16.0
+typing-inspect==0.9.0
+typing-inspection==0.4.4
+urllib3==2.7.0
+uuid_utils==0.17.1
+uvicorn==0.52.4
+uvloop==0.22.1
+watchfiles==1.2.0
+websocket-client==1.9.2
+websockets==16.1.1
+xxhash==3.8.1
+yarl==1.24.5
+zstandard==0.25.0

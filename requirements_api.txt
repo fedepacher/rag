@@ -1,23 +1,69 @@
-pycparser
-pydantic
-pydantic-settings
-pydantic_core
-pytest
-uvicorn
-fastapi
-python-jose
-passlib
-peewee
-websockets
-wsproto
-requests
-starlette
-bcrypt
-pyjwt
-pymysql
-gunicorn
-cryptography
-mysql-connector-python
-pymongo
-email_validator
-python-multipart
+# Fully pinned dependency lock for the `api` service (Dockerfile_api).
+#
+# DIRECT DEPENDENCIES (everything else below is a transitive of these):
+#   fastapi uvicorn gunicorn            -> ASGI app + the server the CMD actually runs
+#   pydantic pydantic-settings          -> schemas and the Settings class
+#   python-jose cryptography            -> JWT signing (api.app.service.auth_service)
+#   passlib bcrypt                      -> password hashing
+#   peewee pymysql                      -> MySQL ORM and its driver (peewee.MySQLDatabase)
+#   pymongo                             -> prompt queue
+#   email_validator                     -> pydantic EmailStr in api/app/schema/user_schema.py
+#   python-multipart                    -> OAuth2PasswordRequestForm in user_router.py
+#
+# bcrypt is held below 4.1 ON PURPOSE. passlib 1.7.4 (2020, last release) cannot detect
+# the backend in bcrypt >= 4.1, and CryptContext(schemes=["bcrypt"]).hash() then raises
+# "password cannot be longer than 72 bytes" for ANY input, including a single character.
+# Unpinned, this file resolves to bcrypt 5.0.0 and every login in the built image fails
+# at runtime -- the build stays green, so nothing catches it until a user tries to log in.
+# Verified: bcrypt 5.0.0 -> hashing raises; bcrypt 4.0.1 -> passlib detects the backend
+# and hashing succeeds.
+#
+# REMOVED (declared but neither imported by api/ nor required at runtime):
+#   pycparser, pydantic_core, starlette  -> transitives of cryptography/pydantic/fastapi
+#   websockets, wsproto                  -> uvicorn WebSocket extras; no WS endpoint exists
+#   requests                             -> not imported anywhere under api/
+#   mysql-connector-python               -> peewee.MySQLDatabase uses pymysql, not this
+#   pytest                               -> test dependency, and the repo has no test files
+#
+# VERIFIED: with this exact set, every module under api/ imports cleanly and passlib
+# bcrypt hashing works. api.main itself opens a MySQL connection at import time, so it
+# only imports where the database is reachable.
+#
+# TO REGENERATE after changing a direct dependency: edit the direct list above, resolve
+# it in a python:3.10-slim container, re-run the import check, then replace the block
+# below with `pip freeze` (minus pip/setuptools/wheel).
+
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+bcrypt==4.0.1
+cffi==2.1.1
+click==8.5.0
+cryptography==50.0.1
+dnspython==2.8.0
+ecdsa==0.19.2
+email-validator==2.3.0
+exceptiongroup==1.3.1
+fastapi==0.141.1
+gunicorn==26.2.0
+h11==0.16.0
+idna==3.19
+packaging==26.3
+passlib==1.7.4
+peewee==4.5.1
+pyasn1==0.6.4
+pycparser==3.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+pydantic-settings==2.15.0
+pymongo==4.18.0
+PyMySQL==1.2.0
+python-dotenv==1.2.3
+python-jose==3.5.0
+python-multipart==0.0.32
+rsa==4.9.1
+six==1.17.0
+starlette==1.6.0
+typing_extensions==4.16.0
+typing-inspection==0.4.4
+uvicorn==0.52.4

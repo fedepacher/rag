@@ -1,3 +1,18 @@
-mysql-connector-python
-pymongo
+# Fully pinned dependency lock for the `email` service (Dockerfile_email).
+#
+# DIRECT DEPENDENCIES:
+#   pymongo  -> the prompt queue, and bson.objectid which ships inside it
+#
+# Everything else the service uses is standard library: smtplib, imaplib, email.*.
+#
+# REMOVED: mysql-connector-python -- nothing under email/app/ references MySQL.
+#
+# VERIFIED: with this exact set, db_nosql, prompt_model, email_manager and
+# prompt_service_email all import cleanly.
+#
+# TO REGENERATE: resolve the direct list above in a python:3.10-slim container, re-run
+# the import check, then replace the block below with `pip freeze`.
 
+dnspython==2.8.0
+packaging==26.3
+pymongo==4.18.0
