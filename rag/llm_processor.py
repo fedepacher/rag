@@ -154,6 +154,23 @@ MAX_GENERATION_ATTEMPTS = 2
 # strictly better than that.
 GRADER_ANSWER_MAX_CHARS = 3000
 
+# How much of a rejected draft is written to the log when Self-RAG withholds an answer.
+#
+# A refusal is the one outcome where the pipeline destroys its own evidence: the student
+# gets UNGROUNDED_FALLBACK_ANSWER and the draft that was actually judged is discarded, so
+# there is no way to tell afterwards whether the verifier caught a real fabrication or
+# vetoed a good answer. Three of six questions refused on 2026-09-10 and none of them
+# could be diagnosed from the logs. 1200 characters is enough to see which claim went
+# beyond the sources without turning every refusal into a wall of log.
+REJECTED_DRAFT_LOG_CHARS = 1200
+
+# How much of a control model's raw reply is logged alongside the parsed verdict.
+# parse_relevance and parse_grounding both fall back to a permissive value on anything
+# they cannot read, so a silently unparseable reply looks exactly like a real verdict.
+# Logging the raw text is what distinguishes "the model said parcialmente_relevante"
+# from "the model rambled and the parser defaulted".
+GRADER_RAW_LOG_CHARS = 200
+
 GROUNDING_PROMPT = """
 Eres un verificador de un sistema de preguntas y respuestas sobre documentos.
 Tu única tarea es decidir si la RESPUESTA está respaldada por los FRAGMENTOS.
@@ -430,7 +447,34 @@ class LLMProcessorOllama(BaseLLMProcessor):
         retrieved_docs = retriever.invoke(search_query)
         logging.debug(f"Retrieved {len(retrieved_docs)} chunk(s) from FAISS (k={RETRIEVAL_K}) "
                       f"for query: {search_query}")
+        # Which documents were reached is the single most useful retrieval signal, and it
+        # is free: the loader already prefixes every chunk with its source. Logged at INFO
+        # rather than DEBUG because a refusal cannot be diagnosed without it -- knowing the
+        # verifier rejected an answer says nothing until you know it was written from the
+        # noise chapter instead of the FET chapter.
+        logging.info(f"Retrieved from: {', '.join(self.chunk_source(document) for document in retrieved_docs)}")
         return {"retrieved_docs": retrieved_docs}
+
+    @staticmethod
+    def chunk_source(document: Document) -> str:
+        """Recover the source filename a chunk was tagged with by the loader.
+
+        The vector store holds plain strings, so the provenance lives in the text itself:
+        ``document_loader.SOURCE_HEADER`` prefixes every chunk with ``[Fuente: <file>]``.
+        Reading it back from ``page_content`` rather than from ``metadata`` is not a
+        preference, it is the only option until the loader is changed to build Document
+        objects with metadata.
+
+        Args:
+            document (Document): Chunk returned by the retriever.
+
+        Returns:
+            str: The source filename, or "?" when the header is absent — which is what a
+            chunk written by an older index build looks like, and is worth seeing in the
+            log rather than crashing retrieval over.
+        """
+        match = re.match(r"\[Fuente: (.+?)\]", document.page_content)
+        return match.group(1) if match else "?"
 
     @staticmethod
     def parse_relevance(grader_response: Any) -> str:
@@ -519,6 +563,8 @@ class LLMProcessorOllama(BaseLLMProcessor):
 
         relevance = self.parse_relevance(grader_response)
         logging.info(f"CRAG relevance verdict: {relevance} (iteration {state.get('iteration_count', 0)})")
+        logging.debug(f"Relevance grader said verbatim: "
+                      f"{str(grader_response)[:GRADER_RAW_LOG_CHARS]!r}")
         return {"relevance": relevance}
 
     def reformulate_query_node(self, state: RAGGraphState) -> Dict[str, Any]:
@@ -707,6 +753,16 @@ class LLMProcessorOllama(BaseLLMProcessor):
         grounding = self.parse_grounding(grader_response)
         logging.info(f"Self-RAG grounding verdict: {grounding} "
                      f"(attempt {state.get('generation_attempts', 0)}/{MAX_GENERATION_ATTEMPTS})")
+        if grounding == GROUNDING_UNGROUNDED:
+            # The only place the rejected draft still exists. One more failed attempt and
+            # ungrounded_node replaces it with UNGROUNDED_FALLBACK_ANSWER, after which
+            # nothing records what was actually judged -- so a refusal caused by a real
+            # fabrication and one caused by an over-strict 3.8B verifier look identical
+            # from the outside. Logged at WARNING because a withheld answer is the outcome
+            # most worth reviewing by hand, whatever the verdict turns out to be.
+            logging.warning(f"Rejected draft (attempt {state.get('generation_attempts', 0)}), "
+                            f"verifier said {str(grader_response)[:GRADER_RAW_LOG_CHARS]!r}, "
+                            f"draft was: {answer[:REJECTED_DRAFT_LOG_CHARS]}")
         return {"grounding": grounding}
 
     def ungrounded_node(self, state: RAGGraphState) -> Dict[str, Any]:
