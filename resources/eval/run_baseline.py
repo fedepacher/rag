@@ -64,7 +64,7 @@ from eval_io import (PIPELINE_ERROR_PREFIX, QUALITY_CRITERIA, SCHEMA_VERSION,  #
                      write_summary)
 from rag.document_loader import LocalDocumentLoader  # noqa: E402
 from rag.llm_processor import MAX_CRAG_ITERATIONS, OUT_OF_SCOPE_ANSWER, RETRIEVAL_K  # noqa: E402
-from rag.main import (OLLAMA_CONTEXT_LENGTH, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_NUM_CTX,  # noqa: E402
+from rag.main import (CHUNK_SIZE_TOKENS, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_NUM_CTX,  # noqa: E402
                       OLLAMA_TEMPERATURE, OLLAMA_TOP_P, PHI_MODEL, build_ollama_processor)
 
 DEFAULT_DATASET_PATH = os.path.join("resources", "eval", "dataset.jsonl")
@@ -371,7 +371,7 @@ def build_summary(records: List[Dict[str, Any]], args: argparse.Namespace,
             "temperature": OLLAMA_TEMPERATURE,
             "top_p": OLLAMA_TOP_P,
             "num_ctx": OLLAMA_NUM_CTX,
-            "chunk_context_length": OLLAMA_CONTEXT_LENGTH,
+            "chunk_size_tokens": CHUNK_SIZE_TOKENS,
             "retrieval_k": RETRIEVAL_K,
             "ollama_server_url": args.ollama_url,
             "document_location": args.document_location,

@@ -54,7 +54,7 @@ from eval_io import (PIPELINE_CLASSIC, PIPELINE_CRAG, PIPELINE_FILE_PREFIX,  # n
 # difference in any of them means the report would be measuring that difference as much
 # as it measures CRAG, so they are checked and surfaced rather than assumed.
 COMPARABLE_CONFIG_KEYS = ("model", "retrieval_k", "num_ctx", "temperature", "top_p",
-                          "chunk_context_length", "dataset", "context_chunks")
+                          "chunk_size_tokens", "dataset", "context_chunks")
 
 LATENCY_METRICS = (("mean_sec", "Mean"), ("median_sec", "Median"), ("p95_sec", "p95"),
                    ("min_sec", "Min"), ("max_sec", "Max"), ("stdev_sec", "Stdev"))

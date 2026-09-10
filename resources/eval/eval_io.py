@@ -26,10 +26,14 @@ from typing import Any, Dict, List, Optional, Set
 #       records that predate the A/B tooling rather than as a format still in use.
 #   2 - Issue #16. Adds `schema_version`, `pipeline`, `out_of_scope` and `crag` so a
 #       classic run and a CRAG run are directly comparable record by record.
+#   3 - Renames the config key `chunk_context_length` to `chunk_size_tokens`. The old name
+#       described the value as a context length when it is the chunk size the splitter
+#       counts in cl100k_base tokens, and that misreading is what let chunks grow to 3.4x
+#       the model's context window. No results file in this repo used the old key.
 #
 # Readers must treat a missing `schema_version` as 1 and a missing `crag` block as
 # "not measured" rather than as zero iterations.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 RESULTS_DIR = os.path.join("resources", "eval", "results")
 

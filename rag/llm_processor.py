@@ -58,12 +58,21 @@ RELEVANCE_IRRELEVANT = "irrelevante"
 #            -> grade (irrelevante, 2 >= 2) -> out_of_scope
 MAX_CRAG_ITERATIONS = 2
 
-# Characters of each retrieved chunk handed to the grader. Chunks are built at
-# OLLAMA_CONTEXT_LENGTH (5000 characters) and RETRIEVAL_K of them would alone overflow
-# the grader's num_ctx before the instructions are even added. Relevance can be judged
-# from the opening of a chunk, and a shorter prompt is what keeps three worst-case
-# grading calls affordable on a CPU-only box.
-GRADER_CHUNK_PREVIEW_CHARS = 1500
+# Characters of each retrieved chunk handed to the grader.
+#
+# The previous value of 1500 was justified by a comment claiming chunks were "5000
+# characters". They were 5000 TOKENS -- 15104 characters on average over the course
+# bibliography -- so the grader was judging relevance, and Self-RAG was verifying
+# grounding, against 9% of each chunk. That is why a fabricated claim could pass
+# verification: the verifier had no sight of the material that would have contradicted it.
+#
+# Chunks are now CHUNK_SIZE_TOKENS (1200) tokens, ~3700 characters at the ~3.1 chars/token
+# this corpus measures, so 3000 characters covers ~80% of a chunk. Budget against the
+# grader's PHI_NUM_CTX of 6000: RETRIEVAL_K previews ~3900 tokens, plus the answer under
+# verification (~500) and the instructions (~200), leaves headroom. Still a bound rather
+# than the whole chunk, because three worst-case grading calls have to stay affordable on
+# a CPU-only box.
+GRADER_CHUNK_PREVIEW_CHARS = 3000
 
 # Upper bound on a reformulated query. A rewrite longer than this is the model
 # rambling rather than searching, and a bad query is worse than the original one.
@@ -348,7 +357,8 @@ class LLMProcessorOllama(BaseLLMProcessor):
     Args:
         llm: Generation model (Llama 3.1 8B in production).
         embedding: Embedding model backing the FAISS vector store.
-        context_length: Character budget used to chunk the course documents.
+        context_length: Token budget used to chunk the course documents. Counted in
+            cl100k_base tokens by TokenTextSplitter, not in characters.
         grader_llm: Small control model (Phi-3.5-mini in production) used by the CRAG
             and Self-RAG nodes to grade relevance, rewrite queries and verify that the
             answer is grounded. A single instance is shared by every control node; do

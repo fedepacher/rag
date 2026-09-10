@@ -11,7 +11,7 @@ from langchain_community.llms import OpenLLM
 from rag.message_clients import APIClient, MessageClient
 from rag.document_loader import LocalDocumentLoader
 from rag.llm_processor import (BaseLLMProcessor, LLMProcessorOllama, LLMProcessorOpenLLM, LLMProcessorHuggingFace,
-                               LLMProcessorOpenAI)
+                               LLMProcessorOpenAI, RETRIEVAL_K)
 
 
 RESTART_AFTER_EXCEPTION_DELAY_SEC = 60
@@ -24,7 +24,24 @@ OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_TEMPERATURE = 0.0
 OLLAMA_TOP_P = 0.9
 OLLAMA_NUM_CTX = 6000
-OLLAMA_CONTEXT_LENGTH = 5000
+# num_ctx bounds prompt + completion together, so the prompt may only use what is left
+# after the answer we intend to generate.
+OLLAMA_ANSWER_TOKEN_BUDGET = 900
+# Tokens the prompt spends on things that are not retrieved text: the longest generation
+# template (GROUNDED_RETRY_PROMPT, ~200 tokens) plus a student question (~60).
+PROMPT_OVERHEAD_TOKENS = 300
+# Chunk size handed to TokenTextSplitter, in TOKENS -- the splitter counts cl100k_base
+# tokens, not characters. DERIVED from the budget above rather than hand-picked, so it
+# cannot drift out of step with num_ctx or RETRIEVAL_K again.
+#
+# It replaces a hand-picked OLLAMA_CONTEXT_LENGTH = 5000, whose name suggested a model
+# context window while its value was a chunk size in tokens. One such chunk nearly filled
+# num_ctx on its own, so a RETRIEVAL_K=4 prompt measured 20137 tokens against a 6000-token
+# window. Ollama truncates rather than failing, and llama.cpp keeps the tail (n_keep=4):
+# the instruction header -- "responde utilizando unicamente la informacion contenida en el
+# documento" and the "No se la respuesta..." escape hatch -- was the first thing dropped,
+# which is how the generator ended up answering from parametric memory.
+CHUNK_SIZE_TOKENS = (OLLAMA_NUM_CTX - OLLAMA_ANSWER_TOKEN_BUDGET - PROMPT_OVERHEAD_TOKENS) // RETRIEVAL_K
 
 # CRAG control model, pulled by entrypoint.sh alongside the generation model. Phi-3.5-mini
 # grades retrieval relevance and rewrites queries; both are classification-style jobs, so
@@ -80,7 +97,7 @@ def build_ollama_processor(enable_crag: bool = True) -> LLMProcessorOllama:
     # )
     embedding = GPT4AllEmbeddings()
     grader_llm = build_phi_control_llm() if enable_crag else None
-    return LLMProcessorOllama(llm, embedding, OLLAMA_CONTEXT_LENGTH, grader_llm=grader_llm)
+    return LLMProcessorOllama(llm, embedding, CHUNK_SIZE_TOKENS, grader_llm=grader_llm)
 
 
 class MessageProcessor:
