@@ -49,6 +49,11 @@ CHUNK_SIZE_TOKENS = (OLLAMA_NUM_CTX - OLLAMA_ANSWER_TOKEN_BUDGET - PROMPT_OVERHE
 # It stays resident next to Llama for the lifetime of the process (~3.2 GiB on top of the
 # generator's ~5.6 GiB, so ~8.5-9 GiB combined on the 16 GB target box). One instance is
 # built here and shared by every control node — never one per node.
+# Bounded retry for the one startup step that depends on the public internet.
+# Linear backoff: 5s, 10s, ... so six attempts span ~105s, comfortably longer than the
+# CDN blips observed, without hanging a genuinely broken deployment for long.
+EMBEDDING_INIT_ATTEMPTS = 6
+EMBEDDING_INIT_BACKOFF_SEC = 5
 PHI_MODEL = "phi3.5:3.8b-mini-instruct-q4_K_M"
 PHI_TEMPERATURE = 0.0
 PHI_NUM_CTX = 6000
@@ -68,6 +73,40 @@ def build_phi_control_llm():
                   num_ctx=PHI_NUM_CTX)
 
 
+def build_gpt4all_embeddings():
+    """Construct GPT4AllEmbeddings, retrying while the model index is unreachable.
+
+    Constructing GPT4AllEmbeddings is not a local operation: gpt4all's list_models() does
+    a bare requests.get on https://gpt4all.io/models/models3.json (which redirects to
+    raw.githubusercontent.com) and raises on any non-200. GitHub's CDN answers an
+    intermittent "503 Backend.max_conn reached", and because this runs during startup with
+    no retry it took the whole RAG service down three times in a row on a box that is
+    meant to run unattended. The blip is short -- the same URL served 200 seconds later --
+    so a bounded retry is the difference between a pause and an outage.
+
+    Raises:
+        Exception: The last error, if every attempt fails. Giving up loudly is correct:
+            without embeddings there is no retrieval, so there is nothing to degrade to.
+
+    Returns:
+        GPT4AllEmbeddings: The embedding model used to build and query the FAISS index.
+    """
+    from langchain.embeddings import GPT4AllEmbeddings
+
+    for attempt in range(1, EMBEDDING_INIT_ATTEMPTS + 1):
+        try:
+            return GPT4AllEmbeddings()
+        except Exception as error:
+            if attempt == EMBEDDING_INIT_ATTEMPTS:
+                logging.error(f"Could not initialise GPT4AllEmbeddings after "
+                              f"{EMBEDDING_INIT_ATTEMPTS} attempts: {error}")
+                raise
+            delay = EMBEDDING_INIT_BACKOFF_SEC * attempt
+            logging.warning(f"GPT4AllEmbeddings init failed (attempt {attempt}/"
+                            f"{EMBEDDING_INIT_ATTEMPTS}): {error}. Retrying in {delay}s.")
+            time.sleep(delay)
+
+
 def build_ollama_processor(enable_crag: bool = True) -> LLMProcessorOllama:
     """Build the Ollama-backed processor used by the default pipeline.
 
@@ -83,7 +122,6 @@ def build_ollama_processor(enable_crag: bool = True) -> LLMProcessorOllama:
         GPT4All embeddings and a FAISS vector store.
     """
     from langchain.llms import Ollama
-    from langchain.embeddings import GPT4AllEmbeddings
     # from langchain.embeddings import OllamaEmbeddings
 
     llm = Ollama(model=OLLAMA_MODEL,
@@ -95,7 +133,7 @@ def build_ollama_processor(enable_crag: bool = True) -> LLMProcessorOllama:
     #     model=OLLAMA_MODEL,
     #     base_url=OLLAMA_HOST
     # )
-    embedding = GPT4AllEmbeddings()
+    embedding = build_gpt4all_embeddings()
     grader_llm = build_phi_control_llm() if enable_crag else None
     return LLMProcessorOllama(llm, embedding, CHUNK_SIZE_TOKENS, grader_llm=grader_llm)
 
