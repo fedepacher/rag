@@ -187,10 +187,42 @@ that are not there (`no_fundamentada`).
   means it may cover it but what was written could not be traced back. Like the out-of-scope answer
   it does not start with `"Error:"`: withholding an unverifiable answer is the mechanism working.
 - **Cost.** Answered question, happy path: +1 Phi call. Worst case with a failed verification:
-  +2 Phi calls and +1 Llama call — Llama on CPU is the expensive one, so an ungrounded question can
-  roughly double its answer latency. No extra RAM: the verifier reuses the same Phi client. Longest
+  +2 Phi calls and +1 Llama call. No extra RAM: the verifier reuses the same Phi client. Longest
   possible walk through the full graph is 13 nodes (3 retrievals, 3 grades, 2 reformulations, 2
   generations, 2 verifications, 1 fallback), inside LangGraph's default recursion limit of 25.
+
+  **A Phi call is not the cheap one.** This paragraph used to say "Llama on CPU is the expensive
+  one". Measured on 2026-09-10, on the 16 GB target box, that is backwards:
+
+  | Node | Question 1 | Question 2 |
+  |------|-----------|-----------|
+  | FAISS retrieval (k=4) | 0.019 s | — |
+  | Phi relevance grade | 324 s | 264 s |
+  | Llama generation | 482 s | 453 s |
+  | Phi grounding verify | 322 s | 287 s |
+  | **Total** | **1128 s** (18.8 min) | did not finish |
+
+  Each Phi call costs roughly what the Llama generation costs, so the two control calls on the
+  happy path make the control plane ~57% of total runtime — the CRAG/Self-RAG arm roughly doubles
+  the classic pipeline rather than adding a margin. Retrieval is free by comparison and is not
+  worth optimising. A plausible driver is `GRADER_CHUNK_PREVIEW_CHARS` (1500 → 3000, so ~12000
+  characters of preview for a 3.8B model on CPU), but **that has not been measured** — confirming
+  it means re-running the same question at 1500, and the raise had a quality reason behind it.
+  n = 2 questions, one run: an order-of-magnitude signal, not a benchmark.
+
+- **Generation is bounded, and both halves of `num_ctx` have to be.** The generator is built with
+  `num_predict=OLLAMA_ANSWER_TOKEN_BUDGET` (900) and the control model with `PHI_NUM_PREDICT`
+  (200). Before that, the answer budget existed only as a divisor inside `CHUNK_SIZE_TOKENS` and
+  was never sent to the model, so the completion side of `num_ctx` was unbounded while the prompt
+  side was carefully derived. On 2026-09-10 a `GROUNDED_RETRY_PROMPT` regeneration entered a
+  repetition loop and ran to 18673 tokens over 2 h 39 min at 2.05 tok/s. Past 6000 tokens
+  llama.cpp does not stop, it context-shifts (`n_keep = 5`, `n_discard = 3069` per shift), so the
+  chunks and the instruction header were evicted and the model generated from an empty context
+  with no way to reach EOS. The queue is serial, so one runaway stalls every pending question.
+  `OLLAMA_REPEAT_PENALTY = 1.1` is secondary prophylaxis — the runaway ran with
+  `repeat_penalty = 1.000`, and at temperature 0 nothing else breaks a loop — but `num_predict` is
+  the hard stop. This is the same unit/enforcement confusion as `OLLAMA_CONTEXT_LENGTH`, one layer
+  up: a budget that only appears in an arithmetic expression constrains nothing.
 
 ### Confidence level in the answer
 

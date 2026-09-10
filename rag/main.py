@@ -24,8 +24,30 @@ OLLAMA_HOST = "http://localhost:11434"
 OLLAMA_TEMPERATURE = 0.0
 OLLAMA_TOP_P = 0.9
 OLLAMA_NUM_CTX = 6000
+# Secondary guard against the repetition loop that num_predict caps.
+#
+# The llama-server parameter dump for the runaway run read "repeat_last_n = 64,
+# repeat_penalty = 1.000": no penalty was in effect at all. At temperature 0 nothing
+# else breaks a loop once the model enters one, because the same argmax keeps being the
+# argmax -- so an uncapped generation had no mechanism to stop itself.
+#
+# num_predict is the hard stop and this is only prophylaxis: it makes entering the loop
+# less likely, it does not bound anything. Kept mild (1.1) because a high repetition
+# penalty is actively harmful here -- answers about electronics legitimately repeat
+# terminology and formula symbols, and penalising that degrades the answer.
+OLLAMA_REPEAT_PENALTY = 1.1
 # num_ctx bounds prompt + completion together, so the prompt may only use what is left
 # after the answer we intend to generate.
+#
+# This value is ENFORCED as num_predict on the generator, not merely subtracted when
+# sizing chunks. Both halves of num_ctx have to be bounded or neither is: with the
+# completion left open, a degenerate generation runs past num_ctx and llama.cpp starts
+# context-shifting (n_keep=5, n_discard=3069 per shift) rather than stopping. The
+# retrieved chunks and the instruction header are evicted, the model generates from an
+# empty context and never emits EOS. Observed 2026-09-10: a GROUNDED_RETRY_PROMPT
+# regeneration reached 18673 tokens in 2h39m at 2.05 tok/s and stalled the queue, which
+# is processed serially. A truncated answer is a bounded, visible failure; an unbounded
+# one is not a failure the service can even detect.
 OLLAMA_ANSWER_TOKEN_BUDGET = 900
 # Tokens the prompt spends on things that are not retrieved text: the longest generation
 # template (GROUNDED_RETRY_PROMPT, ~200 tokens) plus a student question (~60).
@@ -57,6 +79,16 @@ EMBEDDING_INIT_BACKOFF_SEC = 5
 PHI_MODEL = "phi3.5:3.8b-mini-instruct-q4_K_M"
 PHI_TEMPERATURE = 0.0
 PHI_NUM_CTX = 6000
+# Hard cap on what a control node may emit, for the same reason the generator has one.
+# Sized by the longest thing any control prompt legitimately asks for: a reformulated
+# query, itself bounded by REFORMULATED_QUERY_MAX_CHARS (500 chars, ~160 tokens at the
+# ~3.1 chars/token this corpus measures). RELEVANCE_PROMPT and GROUNDING_PROMPT ask for
+# a single word. 200 leaves room without leaving the loop open.
+#
+# Truncation cannot corrupt a verdict: parse_relevance and parse_grounding keyword-match
+# free text and fall back to the permissive value, so a cut-off answer degrades the
+# pipeline towards classic RAG rather than towards a refusal.
+PHI_NUM_PREDICT = 200
 
 
 def build_phi_control_llm():
@@ -70,7 +102,8 @@ def build_phi_control_llm():
     return Ollama(model=PHI_MODEL,
                   base_url=OLLAMA_HOST,
                   temperature=PHI_TEMPERATURE,
-                  num_ctx=PHI_NUM_CTX)
+                  num_ctx=PHI_NUM_CTX,
+                  num_predict=PHI_NUM_PREDICT)
 
 
 def build_gpt4all_embeddings():
@@ -128,7 +161,9 @@ def build_ollama_processor(enable_crag: bool = True) -> LLMProcessorOllama:
                  base_url=OLLAMA_HOST,
                  temperature=OLLAMA_TEMPERATURE,
                  top_p=OLLAMA_TOP_P,
-                 num_ctx=OLLAMA_NUM_CTX)
+                 num_ctx=OLLAMA_NUM_CTX,
+                 num_predict=OLLAMA_ANSWER_TOKEN_BUDGET,
+                 repeat_penalty=OLLAMA_REPEAT_PENALTY)
     # embedding = OllamaEmbeddings(
     #     model=OLLAMA_MODEL,
     #     base_url=OLLAMA_HOST
