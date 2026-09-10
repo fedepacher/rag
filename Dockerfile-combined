@@ -4,6 +4,7 @@ FROM python:3.10-slim AS base
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
+    zstd \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
@@ -14,7 +15,10 @@ RUN apt-get update && apt-get install -y \
 COPY requirements_rag.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
-# Install Ollama server binaries (replace <OLLAMA_URL> with actual link if needed)
+# Install Ollama server binaries.
+# Pinned: the upstream install script is unversioned and its tarball format has
+# changed before (0.33.x switched to zstd), which breaks reproducible builds.
+ARG OLLAMA_VERSION=0.33.3
 RUN curl -fsSL https://ollama.com/install.sh | sh
 
 # Expose the ports used by Ollama and your app
