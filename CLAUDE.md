@@ -32,7 +32,7 @@ docker compose up --build api
 # http://127.0.0.1:8000/docs
 ```
 
-There is no test suite. `pytest` is listed in `requirements_api.txt` but no test files exist.
+There is no test suite. `pytest` used to be listed in `requirements_api.txt`; it was removed when that file was pinned, since it shipped a test dependency into the production image for tests that do not exist. Add it back in the same commit that adds the first test.
 
 ## Pre-flight: passwords.json
 
@@ -72,6 +72,8 @@ REST client → POST / (JWT) → MongoDB (same queue, same flow)
 ### MongoDB as FIFO queue
 
 No Redis or RabbitMQ. The `prompts` collection acts as a job queue: `GET /receive-prompt` returns `find_one({'output': None}, sort=[("date_in", ASCENDING)])`. Only one job is handed out at a time; RAG processes serially.
+
+**An empty queue answers `204 No Content`, not an error.** `prompt_service.get_prompts` returns `None` and the router turns that into a 204, which is the branch `rag/message_clients.py` already implemented (an INFO log and `EMPTY_QUEUE_INTERVAL_SEC`). That branch used to be dead code: the service raised a 404 from *inside* its `try`, the bare `except Exception` caught its own 404 and re-raised it as a 500, and the idle RAG service logged `Received response code 500` every 15 seconds while nothing was wrong. Only the Mongo read belongs inside that `try`.
 
 ### LLM backend selection (RAG service)
 
@@ -123,11 +125,11 @@ verify_grounding ─[no_fundamentada, generation_attempts >= 2]─────�
   string. Graph node exceptions propagate out of `graph.invoke()` and land in the same handler, so
   the error-prefix contract `resources/eval/run_baseline.py` depends on is unchanged.
 
-`langgraph` is the only pinned entry in `requirements_rag.txt` (`>=0.3,<0.4`). Everything else is
-unpinned, but this repo still uses LangChain 0.1-era import paths (`langchain.chains`,
-`langchain.llms`, `langchain.prompts`) that LangChain 1.0 deleted. The 0.3 line is the newest
-`langgraph` that still caps `langchain-core < 0.4`, so adding it cannot drag the stack over that
-break.
+`langgraph` is held at `>=0.3,<0.4` because this repo still uses LangChain 0.1-era import paths
+(`langchain.chains`, `langchain.llms`, `langchain.prompts`) that LangChain 1.0 deleted, and 0.3 is
+the newest line that still caps `langchain-core < 0.4`. See **Dependency pinning** below for the
+rest of the lock.
+
 
 ### CRAG mechanism
 
@@ -148,9 +150,12 @@ break.
 - **Out-of-scope answer** (`OUT_OF_SCOPE_ANSWER`) deliberately does *not* start with `"Error:"`: being
   out of scope is a valid outcome, not a pipeline failure, and `run_baseline.py` flags records by that
   prefix.
-- Grader prompts see only the first `GRADER_CHUNK_PREVIEW_CHARS` (1500) of each chunk — four full
-  5000-character chunks would overflow Phi's `num_ctx` before the instructions are added, and three
-  worst-case grading calls have to stay affordable on a CPU-only box.
+- Grader prompts see only the first `GRADER_CHUNK_PREVIEW_CHARS` (3000) of each chunk, ~80% of a
+  chunk at the current size. It was 1500, justified by a comment claiming chunks were "5000
+  characters"; they were 5000 *tokens* (15104 characters on average), so the graders were judging
+  9% of each chunk — which is how a fabricated claim once passed grounding verification. It is
+  still a bound rather than the whole chunk, because three worst-case grading calls have to stay
+  affordable on a CPU-only box.
 
 ### Self-RAG grounding verification
 
@@ -226,7 +231,64 @@ final graph state — no extra model call, nothing new measured:
 
 `LLMProcessorOllama` persists the vector index to `resources/faiss_index/`. On startup it computes a SHA-256 of the chunked document content and compares it to a stored hash. If documents changed, the index is rebuilt; otherwise it loads from disk.
 
+`load_local` is called with `allow_dangerous_deserialization=True`. A FAISS index is a pickle, and `langchain-community >= 0.0.27` refuses to unpickle one unless the caller vouches for its origin. Vouching is correct here: the else-branch of the same method writes the file with `save_local` from the course documents, and `document_has_changed` gates the load on a SHA-256 of that same content. Nothing is ever downloaded. Note there is **no volume for the index** — `docker-compose.yml` mounts only `ollama:/root/.ollama` — so it lives in the container's writable layer. That is why the missing flag looked intermittent: a first boot takes the build branch and succeeds, a restart takes the load branch and crashed.
+
 Retrieval depth is `k=4` (`RETRIEVAL_K` in `rag/llm_processor.py`), raised from the original `k=2` to give the CRAG/Self-RAG grading nodes more candidate chunks to filter. This applies to `LLMProcessorOllama` only — the OpenAI processor still uses the LangChain default retriever.
+
+### Chunk size is derived, not chosen
+
+`CHUNK_SIZE_TOKENS` in `rag/main.py` is computed, never hand-picked:
+
+```python
+CHUNK_SIZE_TOKENS = (OLLAMA_NUM_CTX - OLLAMA_ANSWER_TOKEN_BUDGET - PROMPT_OVERHEAD_TOKENS) // RETRIEVAL_K
+```
+
+= `(6000 - 900 - 300) // 4` = **1200 tokens**. `num_ctx` bounds prompt *and* completion together, so
+the answer budget comes off the top; `PROMPT_OVERHEAD_TOKENS` covers the longest template
+(`GROUNDED_RETRY_PROMPT`) plus a student question. Measured worst case: 4939 tokens for
+`INITIAL_PROMPT` and 5029 for `GROUNDED_RETRY_PROMPT`, leaving ~1000 for the answer.
+
+It replaces a hand-picked `OLLAMA_CONTEXT_LENGTH = 5000`, and that constant is the cautionary tale
+of this repo. Its name read like a model context window; its value was a chunk size, and
+`TokenTextSplitter` counts **tokens**, not characters. One chunk therefore nearly filled `num_ctx`
+on its own, and a `k=4` prompt measured **20137 tokens against a 6000-token window**. Ollama
+truncates instead of failing, and llama.cpp keeps the tail (`n_keep=4`), so the first thing dropped
+was the instruction header — *"responde utilizando únicamente la información contenida en el
+documento"* and the `"No sé la respuesta..."` escape hatch. The generator was answering from
+parametric memory with no way to know it, and shipping the result with a confidence note. Deriving
+the value is what stops `num_ctx`, `RETRIEVAL_K` and the chunk size from drifting apart again.
+
+### Dependency pinning
+
+All three requirements files are full locks (`pip freeze`), each with a header naming the direct
+dependencies, what was removed and why, and how to regenerate. This is not housekeeping — the
+unpinned state cost real failures:
+
+- **`bcrypt`.** Unpinned, `requirements_api.txt` resolved to `bcrypt 5.0.0`, which `passlib 1.7.4`
+  (2020, final release) cannot detect as a backend. `CryptContext(schemes=["bcrypt"]).hash()` then
+  raises `password cannot be longer than 72 bytes` for *any* input, a single character included.
+  The build stays green and every login in the built image fails at runtime, so nothing catches it
+  until a user tries to authenticate. Hence `bcrypt<4.1`.
+- **5.5 GB of CUDA.** `requirements_rag.txt` declared `sentence-transformers` and `transformers`,
+  which appear in no import anywhere in the repo and pulled `torch`, 20 `nvidia-*` wheels and
+  `triton` onto a CPU-only box. `site-packages`: 6.4 GB → 901 MB. Embeddings come from
+  `GPT4AllEmbeddings`, generation from Ollama over HTTP, and `LLMProcessorHuggingFace` posts to a
+  remote endpoint and runs nothing locally.
+- Also removed: `langchain-ollama` / `langchain-openai` (the code imports `langchain.llms.Ollama`
+  and `langchain.chat_models.ChatOpenAI`), a duplicate `pypdf2`, and in the API `pycparser`,
+  `pydantic_core`, `starlette`, `websockets`, `wsproto`, `requests`, `mysql-connector-python`
+  (peewee's `MySQLDatabase` uses `pymysql`) and `pytest`.
+- Added: `requests` and `typing_extensions`, imported directly by `rag/` but previously arriving
+  only by accident as transitives.
+
+`email/requirements.txt` is dead — no Dockerfile references it. The three files in use are
+`requirements_{api,email,rag}.txt`.
+
+To regenerate one: edit its direct list, resolve it in a `python:3.10-slim` container, re-run the
+import check against the real modules (including runtime-only deps no code imports — `gunicorn`,
+`uvicorn.workers`, `pymysql`, `multipart`, `email_validator` — and an actual `passlib` hash), then
+replace the lock with `pip freeze` minus `pip`/`setuptools`/`wheel`. An audit that only follows
+imports will miss exactly the deps that break in production.
 
 ### Evaluation harness (`resources/eval/`)
 
@@ -257,7 +319,7 @@ Two gaps in the CRAG arm's record, both known:
 - **Self-RAG is timed but not counted.** Grounding verification runs and is included in the measured latency, but `CragInstrumentation` does not wrap `verify_grounding_node` or `generate_node`, so grounding verdicts, regeneration count, ungrounded-fallback rate and the confidence level have no fields of their own.
 - **The confidence note is inside `generated_answer`.** Split on `"\n\n---\n"` to recover the bare answer, and score the answer rather than the note.
 
-Records carry `schema_version` (currently `2`; `1` was the #13 shape with no `pipeline`/`crag`/`out_of_scope` fields). No v1 file was ever committed, so nothing needed migrating.
+Records carry `schema_version` (currently `3`; `1` was the #13 shape with no `pipeline`/`crag`/`out_of_scope` fields, `2` added them, `3` renames the config key `chunk_context_length` to `chunk_size_tokens`). No results file was ever committed at any version, so nothing needed migrating.
 
 **There is no runnable "v1.0" to compare against.** The comparison originally asked for was against the Mistral 7B / `k=2` / `RetrievalQA` system, but the model swap, the `k` bump and the LangGraph migration each replaced it *in place* rather than keeping it configurable, so `--no-crag` is the Llama 3.1 8B / `k=4` baseline, not v1.0. The last commit where v1.0 is intact is `87ca5f3`. `AB_TESTING.md` documents the two ways out — measure `87ca5f3` in a worktree with a backported harness, or redeclare the current baseline as the reference point — and the decision has not been made.
 
@@ -283,8 +345,11 @@ Defined in `docker-compose.yml`. The API reads them via a pydantic-settings `Set
 ## Gotchas
 
 - `Dockerfile_rag` (Python 3.11, no Ollama) is **not** used by `docker-compose.yml`. The active one is `Dockerfile-combined` (Python 3.10-slim + Ollama bundled via curl).
+- **`Dockerfile-combined` installs `zstd` and pins `ARG OLLAMA_VERSION`.** Ollama's install script switched its release artifact from a gzip `.tgz` to `ollama-linux-amd64.tar.zst`; it now shells out to `unzstd` and aborts with `ERROR: This version requires zstd for extraction`, which `python:3.10-slim` does not ship. Pinning the version is the actual fix — `curl | sh` of an unversioned upstream script is a build that any vendor release can break. The script honours `OLLAMA_VERSION` (`VER_PARAM="${OLLAMA_VERSION:+?version=$OLLAMA_VERSION}"`). `ARG`, not `ENV`, so a build-time input does not persist into the runtime container.
+- **`GPT4AllEmbeddings()` reaches the public internet at startup.** `gpt4all`'s `list_models()` does a bare `requests.get` on `https://gpt4all.io/models/models3.json` (301 → `raw.githubusercontent.com`) and raises on any non-200. GitHub's CDN returns an intermittent `503 Backend.max_conn reached`, which with no retry took the whole RAG service down three times in a row. `build_gpt4all_embeddings()` in `rag/main.py` now wraps it in a bounded retry (`EMBEDDING_INIT_ATTEMPTS = 6`, linear backoff, ~105s total) and re-raises after the last attempt — without embeddings there is no retrieval, so there is nothing to degrade to.
 - **Two models, and both stay resident.** `entrypoint.sh` starts Ollama, waits for readiness, downloads `llama3.1:8b-instruct-q4_K_M` and `phi3.5:3.8b-mini-instruct-q4_K_M` if missing, then runs `rag/main.py` — a cold start with an empty `ollama` volume pulls ~7.3 GB of weights and is slow. At runtime the loaded footprint is larger than the weights: ~5.6 GiB for Llama plus ~3.2 GiB for Phi at `num_ctx=6000`, so ~8.5–9 GiB combined on the 16 GB target box. `enable_crag=False` never builds the Phi client, which is why a classic/baseline run stays at the pre-CRAG footprint.
 - The API container blocks on `wait-for-it.sh` until MySQL port 3306 is ready before gunicorn starts.
+- **Schema creation is a one-shot step in `Dockerfile_api`'s CMD, before gunicorn forks.** It used to run from `api/main.py` at import time, which meant all four `gunicorn -w 4` workers executed DDL concurrently; against an empty database they raced and the boot died with `pymysql.err.OperationalError: (1061, "Duplicate key name 'users_email'")` → `Worker failed to boot`. `create_tables` does pass `safe=True`, but that cannot help: MySQL has no `CREATE INDEX IF NOT EXISTS`, so `MySQLDatabase.safe_create_index` is `False` and peewee's early return only covers a run where the table already exists. The bug self-healed on the next boot, which is what made it look intermittent.
 - Chroma telemetry is explicitly disabled in `llm_processor.py` (`ANONYMIZED_TELEMETRY=False`).
 - The `forgot_password` endpoint is language-aware: pass `language=es` or `language=us` to select the email template suffix.
 - `agentic-rag-informe.html` in the repo root is **untracked and not a repo doc.** It is the technical proposal the CRAG/Self-RAG work was derived from, structured as before/after: its `k=2` + Mistral 7B flow diagram is the deliberate "v1.0 actual" panel, not a stale copy of the current architecture. Do not "fix" it to match the code — it has never been committed, so it is the author's own working document.
