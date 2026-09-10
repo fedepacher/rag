@@ -15,4 +15,8 @@ COPY passwords.json /app/passwords.json
 EXPOSE 8000
 
 # Command to start the API, including waiting for the database
-CMD ["./wait-for-it.sh", "database:3306", "--", "gunicorn", "-w", "4", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:8000", "api.main:app"]
+# The schema step runs ONCE here, before gunicorn forks its 4 workers. It used to run
+# from api/main.py at import time, i.e. once per worker in parallel, which raced on
+# index creation against an empty database and killed the boot with
+# "Duplicate key name 'users_email'".
+CMD ["./wait-for-it.sh", "database:3306", "--", "sh", "-c", "python -m api.app.scripts.create_tables && exec gunicorn -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000 api.main:app"]
