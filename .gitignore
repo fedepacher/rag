@@ -162,3 +162,22 @@ cython_debug/
 .idea/
 
 passwords.json
+# Author's working documents, not repository documentation.
+#
+# These live in the working tree because they are written and read here, but they are
+# not part of the project: agentic-rag-informe.html is the technical proposal the
+# CRAG/Self-RAG work was derived from (its k=2 / Mistral 7B diagram is a deliberate
+# "v1.0" panel, not a stale copy of the current architecture), and the URUCON 2026
+# files are unpublished conference drafts. The repository is public.
+#
+# Note this list does NOT cover resources/files/*.pdf. Thirteen of the fifteen course
+# documents the pipeline actually loads are untracked, so the corpus every measurement
+# was taken against cannot be reproduced from this repository. Publishing them is a
+# rights decision for the cátedra, not a housekeeping one — they are left visible in
+# git status on purpose, so the gap stays a pending decision instead of a hidden one.
+agentic-rag-informe.html
+Trabajo URUCON*
+Sistema automático de consultas*
+
+# Agent tooling state (skill registry), not project source.
+.atl/
