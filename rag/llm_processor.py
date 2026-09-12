@@ -386,7 +386,7 @@ class LLMProcessorOllama(BaseLLMProcessor):
 
     def build_or_load_vectorstore(self, context: list[str]):
         if os.path.exists(FAISS_INDEX_PATH) and not self.document_has_changed(context):
-            self.vectorstore = FAISS.load_local(FAISS_INDEX_PATH, self.embedding)
+            self.vectorstore = FAISS.load_local(FAISS_INDEX_PATH, self.embedding, allow_dangerous_deserialization=True)
         else:
             if os.path.exists(FAISS_INDEX_PATH):
                 shutil.rmtree(FAISS_INDEX_PATH, ignore_errors=True)
@@ -409,8 +409,12 @@ class LLMProcessorOllama(BaseLLMProcessor):
         search_query = state.get("search_query") or state["question"]
         retriever = self.vectorstore.as_retriever(search_kwargs={"k": RETRIEVAL_K})
         retrieved_docs = retriever.invoke(search_query)
-        logging.debug(f"Retrieved {len(retrieved_docs)} chunk(s) from FAISS (k={RETRIEVAL_K}) "
-                      f"for query: {search_query}")
+        logging.info(f"=== [NODO: RETRIEVE] ===")
+        logging.info(f"Consulta de búsqueda: '{search_query}'")
+        logging.info(f"Recuperados {len(retrieved_docs)} fragmentos (k={RETRIEVAL_K}):")
+        for idx, doc in enumerate(retrieved_docs, start=1):
+            snippet = doc.page_content[:200].replace('\n', ' ')
+            logging.info(f"  Fragmento {idx} (total {len(doc.page_content)} caracteres): {snippet}...")
         return {"retrieved_docs": retrieved_docs}
 
     @staticmethod
@@ -489,9 +493,11 @@ class LLMProcessorOllama(BaseLLMProcessor):
                                           for document in retrieved_docs)
         prompt = self.relevance_prompt.format(context=context, question=state["question"])
 
-        logging.debug("Waiting for the relevance grader")
+        logging.info("=== [NODO: GRADE RELEVANCE (CRAG)] ===")
+        logging.info(f"Evaluando relevancia para la pregunta: '{state['question']}'")
         try:
             grader_response = self.grader_llm.invoke(prompt)
+            logging.info(f"Respuesta cruda de Phi-3.5 (Evaluador): {repr(grader_response)}")
         except Exception as err:
             # The control model is an enhancement, not a dependency: if it is down the
             # pipeline degrades to classic RAG instead of failing the student's question.
@@ -499,7 +505,7 @@ class LLMProcessorOllama(BaseLLMProcessor):
             return {"relevance": RELEVANCE_PARTIAL}
 
         relevance = self.parse_relevance(grader_response)
-        logging.info(f"CRAG relevance verdict: {relevance} (iteration {state.get('iteration_count', 0)})")
+        logging.info(f"CRAG veredicto de relevancia: '{relevance}' (iteración {state.get('iteration_count', 0)})")
         return {"relevance": relevance}
 
     def reformulate_query_node(self, state: RAGGraphState) -> Dict[str, Any]:
@@ -517,11 +523,14 @@ class LLMProcessorOllama(BaseLLMProcessor):
         """
         search_query = state.get("search_query") or state["question"]
         iteration_count = state.get("iteration_count", 0) + 1
+        logging.info("=== [NODO: REFORMULATE QUERY (CRAG)] ===")
         prompt = self.reformulation_prompt.format(question=state["question"], search_query=search_query)
 
-        logging.debug("Waiting for the query reformulation")
+        logging.info(f"Reescribiendo consulta para '{search_query}' (intento {iteration_count}/{MAX_CRAG_ITERATIONS})")
         try:
-            reformulated_query = self.sanitize_reformulated_query(self.grader_llm.invoke(prompt))
+            raw_reform = self.grader_llm.invoke(prompt)
+            logging.info(f"Respuesta cruda de reformulación Phi-3.5: {repr(raw_reform)}")
+            reformulated_query = self.sanitize_reformulated_query(raw_reform)
         except Exception as err:
             logging.error(f"Query reformulation failed: {err}", exc_info=True)
             reformulated_query = ""
@@ -531,8 +540,7 @@ class LLMProcessorOllama(BaseLLMProcessor):
                             f"keeping the previous query")
             return {"iteration_count": iteration_count}
 
-        logging.info(f"CRAG reformulation {iteration_count}/{MAX_CRAG_ITERATIONS}: "
-                     f"'{search_query}' -> '{reformulated_query}'")
+        logging.info(f"CRAG nueva consulta reformulada: '{reformulated_query}'")
         return {"search_query": reformulated_query, "iteration_count": iteration_count}
 
     def out_of_scope_node(self, state: RAGGraphState) -> Dict[str, Any]:
@@ -548,8 +556,9 @@ class LLMProcessorOllama(BaseLLMProcessor):
         Returns:
             Dict[str, Any]: State update carrying the out-of-scope answer.
         """
-        logging.info(f"CRAG exhausted {MAX_CRAG_ITERATIONS} reformulation(s) without relevant context; "
-                     f"answering out of scope for: {state['question']}")
+        logging.info(f"=== [NODO: OUT OF SCOPE] ===")
+        logging.info(f"CRAG agotó {MAX_CRAG_ITERATIONS} reformulaciones sin contexto relevante; "
+                     f"respondiendo 'fuera de alcance' para: {state['question']}")
         return {"answer": OUT_OF_SCOPE_ANSWER}
 
     def route_after_grading(self, state: RAGGraphState) -> str:
@@ -571,10 +580,15 @@ class LLMProcessorOllama(BaseLLMProcessor):
         Returns:
             str: Name of the next node: "generate", "reformulate_query" or "out_of_scope".
         """
-        if (state.get("relevance") or RELEVANCE_PARTIAL) != RELEVANCE_IRRELEVANT:
+        relevance_verdict = (state.get("relevance") or RELEVANCE_PARTIAL)
+        logging.info(f"Ruta post-evaluación: veredicto={relevance_verdict}, iteraciones={state.get('iteration_count', 0)}")
+        if relevance_verdict != RELEVANCE_IRRELEVANT:
+            logging.info("-> Avanzando a nodo 'generate'")
             return "generate"
         if state.get("iteration_count", 0) < MAX_CRAG_ITERATIONS:
+            logging.info("-> Desviando a nodo 'reformulate_query'")
             return "reformulate_query"
+        logging.info("-> Desviando a nodo 'out_of_scope' (límite alcanzado)")
         return "out_of_scope"
 
     def generate_node(self, state: RAGGraphState) -> Dict[str, Any]:
@@ -601,16 +615,17 @@ class LLMProcessorOllama(BaseLLMProcessor):
         generation_attempts = state.get("generation_attempts", 0) + 1
         context = DOCUMENT_SEPARATOR.join(document.page_content for document in retrieved_docs)
 
+        logging.info(f"=== [NODO: GENERATE (Llama 3.1)] (Intento {generation_attempts}/{MAX_GENERATION_ATTEMPTS}) ===")
         if state.get("grounding") == GROUNDING_UNGROUNDED:
-            logging.info(f"Self-RAG regeneration {generation_attempts}/{MAX_GENERATION_ATTEMPTS} "
-                         f"with the strict grounding prompt")
+            logging.info(f"Self-RAG regenerando con prompt estricto...")
             prompt = self.grounded_retry_prompt.format(context=context, question=question)
         else:
             prompt = self.qa_chain_prompt.format(context=context, question=question)
 
-        logging.debug("Waiting for LLM response")
+        logging.info("Llamando al modelo generador Llama 3.1...")
         llm_response = self.llm.invoke(prompt)
         answer = llm_response if isinstance(llm_response, str) else str(llm_response)
+        logging.info(f"Respuesta generada preliminar (primeros 300 caracteres): {answer[:300].strip()}...")
         return {"answer": answer, "generation_attempts": generation_attempts}
 
     @staticmethod
@@ -669,15 +684,16 @@ class LLMProcessorOllama(BaseLLMProcessor):
             logging.warning("Grounding verification skipped: no answer or no retrieved chunk")
             return {"grounding": GROUNDING_GROUNDED}
 
+        logging.info("=== [NODO: VERIFY GROUNDING (Self-RAG - Phi-3.5)] ===")
         context = DOCUMENT_SEPARATOR.join(document.page_content[:GRADER_CHUNK_PREVIEW_CHARS]
                                           for document in retrieved_docs)
         prompt = self.grounding_prompt.format(context=context,
                                               question=state["question"],
                                               answer=answer[:GRADER_ANSWER_MAX_CHARS])
 
-        logging.debug("Waiting for the grounding verifier")
         try:
             grader_response = self.grader_llm.invoke(prompt)
+            logging.info(f"Respuesta cruda de Phi-3.5 (Verificador Grounding): {repr(grader_response)}")
         except Exception as err:
             # Same contract as relevance grading: the control model is an enhancement,
             # not a dependency. If it is down the answer ships unverified rather than
@@ -686,8 +702,8 @@ class LLMProcessorOllama(BaseLLMProcessor):
             return {"grounding": GROUNDING_GROUNDED}
 
         grounding = self.parse_grounding(grader_response)
-        logging.info(f"Self-RAG grounding verdict: {grounding} "
-                     f"(attempt {state.get('generation_attempts', 0)}/{MAX_GENERATION_ATTEMPTS})")
+        logging.info(f"Self-RAG veredicto de fundamentación: '{grounding}' "
+                     f"(intento {state.get('generation_attempts', 0)}/{MAX_GENERATION_ATTEMPTS})")
         return {"grounding": grounding}
 
     def ungrounded_node(self, state: RAGGraphState) -> Dict[str, Any]:
@@ -704,8 +720,9 @@ class LLMProcessorOllama(BaseLLMProcessor):
         Returns:
             Dict[str, Any]: State update carrying the ungrounded fallback answer.
         """
-        logging.warning(f"Self-RAG could not ground the answer after {MAX_GENERATION_ATTEMPTS} attempt(s); "
-                        f"withholding it for: {state['question']}")
+        logging.info(f"=== [NODO: UNGROUNDED FALLBACK] ===")
+        logging.warning(f"Self-RAG no pudo fundamentar la respuesta tras {MAX_GENERATION_ATTEMPTS} intento(s); "
+                        f"reteniendo la respuesta para: {state['question']}")
         return {"answer": UNGROUNDED_FALLBACK_ANSWER}
 
     def route_after_grounding(self, state: RAGGraphState) -> str:
@@ -723,10 +740,15 @@ class LLMProcessorOllama(BaseLLMProcessor):
         Returns:
             str: END, or the name of the next node: "generate" or "ungrounded".
         """
-        if (state.get("grounding") or GROUNDING_GROUNDED) == GROUNDING_GROUNDED:
+        grounding_verdict = (state.get("grounding") or GROUNDING_GROUNDED)
+        logging.info(f"Ruta post-fundamentación: veredicto={grounding_verdict}, intentos={state.get('generation_attempts', 0)}")
+        if grounding_verdict == GROUNDING_GROUNDED:
+            logging.info("-> Respuesta fundamentada. Finalizando (END).")
             return END
         if state.get("generation_attempts", 0) < MAX_GENERATION_ATTEMPTS:
+            logging.info("-> No fundamentada. Reintentando generación con prompt estricto ('generate').")
             return "generate"
+        logging.info("-> No fundamentada y sin intentos restantes. Desviando a 'ungrounded'.")
         return "ungrounded"
 
     @staticmethod
