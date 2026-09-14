@@ -610,12 +610,25 @@ class LLMProcessorOllama(BaseLLMProcessor):
         Increments ``iteration_count`` unconditionally, including when the rewrite
         fails, so that the correction loop is bounded by construction and cannot spin.
 
+        Resets ``generation_attempts`` for the same structural reason, and because the
+        two counters bound different things: ``generation_attempts`` bounds regeneration
+        *over one set of chunks*, which is why the Self-RAG retry swaps in a stricter
+        prompt rather than re-running the same one. A reformulation replaces those
+        chunks, so the next generation is a first attempt, not a retry. Carrying the
+        count across would let one escape-hatch reformulation consume the grounding
+        retry, leaving a genuinely ungrounded answer on the following round withheld
+        with no second chance -- CRAG starving Self-RAG through a shared budget instead
+        of a shared counter. It would also mislabel the result: ``derive_confidence``
+        reads ``generation_attempts > 1`` as "the verifier rejected a draft", which on a
+        merely reformulated question never happened.
+
         Args:
             state (RAGGraphState): Current graph state, read for its question, current
                 search query and iteration count.
 
         Returns:
-            Dict[str, Any]: State update carrying the new query and iteration count.
+            Dict[str, Any]: State update carrying the new query, the iteration count and
+            a reset generation budget.
         """
         search_query = state.get("search_query") or state["question"]
         iteration_count = state.get("iteration_count", 0) + 1
@@ -631,11 +644,13 @@ class LLMProcessorOllama(BaseLLMProcessor):
         if not reformulated_query:
             logging.warning(f"Reformulation {iteration_count}/{MAX_CRAG_ITERATIONS} produced nothing usable; "
                             f"keeping the previous query")
-            return {"iteration_count": iteration_count}
+            return {"iteration_count": iteration_count, "generation_attempts": 0}
 
         logging.info(f"CRAG reformulation {iteration_count}/{MAX_CRAG_ITERATIONS}: "
                      f"'{search_query}' -> '{reformulated_query}'")
-        return {"search_query": reformulated_query, "iteration_count": iteration_count}
+        return {"search_query": reformulated_query,
+                "iteration_count": iteration_count,
+                "generation_attempts": 0}
 
     def out_of_scope_node(self, state: RAGGraphState) -> Dict[str, Any]:
         """Graph node: answer that the question is not covered by the bibliography.
@@ -700,21 +715,38 @@ class LLMProcessorOllama(BaseLLMProcessor):
         generator's own words is deterministic and costs nothing, where relying on a
         3.8B model to honour a documented instruction demonstrably does not hold.
 
-        Out of scope rather than ungrounded is the honest label: "the material does not
-        cover this" is precisely what the generator said, whereas ungrounded means an
-        answer exists but could not be traced.
+        What the escape hatch reports is a *retrieval* failure, so while the correction
+        loop still has budget the honest response is to correct retrieval rather than to
+        give up: route to ``reformulate_query`` and let a rewritten query try again.
+        This is the only edge that actually exercises the CRAG loop in practice. The
+        relevance grader has never once returned ``irrelevante`` on the recorded runs,
+        so before this edge existed the loop was unreachable code -- and a question whose
+        answer *was* in the corpus, reached by a differently phrased question minutes
+        later, was refused outright (issue #29).
+
+        Out of scope rather than ungrounded is the honest label once the budget is spent:
+        "the material does not cover this" is precisely what the generator said, whereas
+        ungrounded means an answer exists but could not be traced.
 
         Args:
-            state (RAGGraphState): Current graph state, read for its generated answer.
+            state (RAGGraphState): Current graph state, read for its generated answer
+                and iteration count.
 
         Returns:
-            str: "out_of_scope" or "verify_grounding".
+            str: "reformulate_query", "out_of_scope" or "verify_grounding".
         """
-        if self.is_no_answer(state.get("answer")):
-            logging.info("Generator reported the context does not answer the question; "
-                         "skipping grounding verification and answering out of scope")
-            return "out_of_scope"
-        return "verify_grounding"
+        if not self.is_no_answer(state.get("answer")):
+            return "verify_grounding"
+        iteration_count = state.get("iteration_count", 0)
+        if iteration_count < MAX_CRAG_ITERATIONS:
+            logging.info(f"Generator reported the context does not answer the question; "
+                         f"correcting retrieval instead of refusing "
+                         f"(reformulation {iteration_count + 1}/{MAX_CRAG_ITERATIONS})")
+            return "reformulate_query"
+        logging.info("Generator reported the context does not answer the question and the "
+                     "reformulation budget is spent; skipping grounding verification and "
+                     "answering out of scope")
+        return "out_of_scope"
 
     def route_after_grading(self, state: RAGGraphState) -> str:
         """Conditional edge: pick the successor of the relevance grading node.
@@ -982,18 +1014,28 @@ class LLMProcessorOllama(BaseLLMProcessor):
             grade_relevance -[relevante | parcialmente_relevante]-> generate
             grade_relevance -[irrelevante, iteration_count <  MAX_CRAG]-> reformulate_query -> retrieve
             grade_relevance -[irrelevante, iteration_count >= MAX_CRAG]-> out_of_scope -> END
-            generate -> verify_grounding
+            generate -[escape hatch, iteration_count <  MAX_CRAG]-> reformulate_query -> retrieve
+            generate -[escape hatch, iteration_count >= MAX_CRAG]-> out_of_scope -> END
+            generate -[real answer]-> verify_grounding
             verify_grounding -[fundamentada]-> END
             verify_grounding -[no_fundamentada, generation_attempts <  MAX_GEN]-> generate
             verify_grounding -[no_fundamentada, generation_attempts >= MAX_GEN]-> ungrounded -> END
 
         Both loops are bounded by the node that closes them incrementing its own counter
         unconditionally: ``reformulate_query`` for ``iteration_count`` and ``generate``
-        for ``generation_attempts``. The counters are separate on purpose, so a question
-        that spent its reformulations still gets its grounding retry. The longest
-        possible walk is 3 retrievals, 3 relevance grades, 2 reformulations, 2
-        generations, 2 verifications and the fallback node: 13 steps, well inside
-        LangGraph's default recursion limit of 25.
+        for ``generation_attempts``. The counters stay separate, and ``reformulate_query``
+        additionally resets ``generation_attempts``, so a question that spent its
+        reformulations still gets its grounding retry on the chunks it ended up with.
+
+        ``iteration_count`` is what bounds the whole graph: it is incremented only by
+        ``reformulate_query`` and never reset, so there are at most MAX_CRAG + 1 = 3
+        retrieval rounds however the loop is entered, and at most MAX_GEN = 2 generations
+        inside each -- an arithmetic ceiling of 20 nodes. Driving both loops to
+        exhaustion on one question with an adversarial stub measures 18 super-steps, 6
+        generations and 8 control calls (see
+        ``test_the_worst_case_walk_stays_inside_the_default_recursion_limit``). That is
+        inside LangGraph's default recursion limit of 25, but no longer by much: raising
+        either cap needs ``recursion_limit`` raised with it, and the test re-measured.
 
         Returns:
             CompiledStateGraph: Graph ready to be invoked with a RAGGraphState.
@@ -1023,6 +1065,7 @@ class LLMProcessorOllama(BaseLLMProcessor):
         workflow.add_edge("out_of_scope", END)
         workflow.add_conditional_edges("generate", self.route_after_generation, {
             "verify_grounding": "verify_grounding",
+            "reformulate_query": "reformulate_query",
             "out_of_scope": "out_of_scope"
         })
         workflow.add_conditional_edges("verify_grounding", self.route_after_grounding, {

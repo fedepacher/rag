@@ -32,7 +32,24 @@ docker compose up --build api
 # http://127.0.0.1:8000/docs
 ```
 
-There is no test suite. `pytest` used to be listed in `requirements_api.txt`; it was removed when that file was pinned, since it shipped a test dependency into the production image for tests that do not exist. Add it back in the same commit that adds the first test.
+```bash
+# Graph routing tests (no Ollama, no corpus, no FAISS — ~1s)
+docker run --rm --entrypoint sh -v "$PWD":/app -w /app rag-rag:latest \
+  -c "python -m pytest tests/ -q"
+```
+
+`tests/test_graph_routing.py` is the only test module. It covers what is pure in the CRAG/Self-RAG
+graph — `is_no_answer`, the three routing functions, `derive_confidence`, the compiled edge set and
+the loop bounds — with stub LLMs and a stub vectorstore, so the acceptance criteria that would
+otherwise need a 1h47m pipeline run are checked in under a second. It deliberately does **not** test
+answer quality: that needs the real models and a human reading the output, which is what
+`resources/eval/` is for.
+
+Tests run in the `rag` image because importing `rag/llm_processor.py` needs the real
+`langgraph`/`langchain` stack; `--entrypoint sh` is required because the bind mount shadows
+`entrypoint.sh`. `pytest` is back in `requirements_rag.txt` (it had been dropped when the locks were
+pinned, since it shipped a test dependency for tests that did not exist) — the lock is the runtime
+image's, and there is no separate dev image to put it in.
 
 ## Pre-flight: passwords.json
 
@@ -105,7 +122,9 @@ START → retrieve → grade_relevance
 grade_relevance ─[relevante | parcialmente_relevante]──────────────→ generate
 grade_relevance ─[irrelevante, iteration_count <  2]─→ reformulate_query → retrieve
 grade_relevance ─[irrelevante, iteration_count >= 2]──────────────→ out_of_scope → END
-generate ─────────────────────────────────────────────────────────→ verify_grounding
+generate ─[real answer]───────────────────────────────────────────→ verify_grounding
+generate ─["No sé", iteration_count <  2]────────────→ reformulate_query → retrieve
+generate ─["No sé", iteration_count >= 2]─────────────────────────→ out_of_scope → END
 verify_grounding ─[fundamentada]───────────────────────────────────────────────→ END
 verify_grounding ─[no_fundamentada, generation_attempts <  2]─────→ generate (strict prompt)
 verify_grounding ─[no_fundamentada, generation_attempts >= 2]─────→ ungrounded → END
@@ -138,6 +157,15 @@ rest of the lock.
   question is 3 retrievals, 3 relevance grades and 2 reformulations. `reformulate_query_node` is the
   only node that increments `iteration_count`, and it increments even when the rewrite fails, so the
   loop is bounded by construction.
+- **The loop is opened by the generator, not by the grader.** In 24 recorded question-runs the
+  relevance grader returned `irrelevante` exactly zero times, so `grade_relevance` alone never once
+  entered the loop — the mechanism the URUCON paper is built on was unreachable code. What does open
+  it is `route_after_generation`: when the generator answers with the `INITIAL_PROMPT` escape hatch
+  (`is_no_answer`), it is reporting that retrieval failed, and it is reporting it having read the
+  chunks *in full* where the grader saw only `GRADER_CHUNK_PREVIEW_CHARS` of each. That verdict is
+  therefore trusted over the grader's. Run D's R2 is the case: graded `relevante`, retrieved the
+  right PDF but the wrong pages, refused a question whose answer R3 quoted verbatim 20 minutes
+  later. See issue #29.
 - **`parcialmente_relevante` goes straight to generation.** Only `irrelevante` opens the loop. Partial
   relevance means the bibliography does cover the topic, and `INITIAL_PROMPT` already forces
   *"No sé la respuesta basada en la información proporcionada."* for whatever is missing — reformulating
@@ -171,10 +199,21 @@ that are not there (`no_fundamentada`).
   text. So the retry uses `GROUNDED_RETRY_PROMPT`, a stricter variant of `INITIAL_PROMPT` — a
   *different* prompt is what makes a different answer possible at temperature 0. A third pass would
   only multiply the slowest call in the pipeline.
-- **Separate counter.** `generation_attempts` is not folded into `iteration_count`. The two bound
-  different loops (re-query with a rewritten query vs. regenerate from the same chunks), both can
-  run for the same question, and sharing one counter would let CRAG starve Self-RAG. `generate_node`
-  increments its counter unconditionally, the same structural bound `reformulate_query_node` uses.
+- **Separate counter, and reset on reformulation.** `generation_attempts` is not folded into
+  `iteration_count`. The two bound different loops (re-query with a rewritten query vs. regenerate
+  from the same chunks), both can run for the same question, and sharing one counter would let CRAG
+  starve Self-RAG. `generate_node` increments its counter unconditionally, the same structural bound
+  `reformulate_query_node` uses.
+
+  Separate counters are not enough on their own: once the generator's "No sé" could open the
+  correction loop, CRAG could starve Self-RAG through the shared *budget* instead of a shared
+  counter. One escape-hatch reformulation would leave `generation_attempts` at 1, and a genuinely
+  ungrounded answer on the next round would be withheld with no strict-prompt retry. So
+  `reformulate_query_node` resets `generation_attempts` to 0. That is not a loophole in the bound —
+  `iteration_count` is never reset, so there are still at most 3 retrieval rounds — and it is what
+  keeps the confidence level honest: `derive_confidence` reads `generation_attempts > 1` as "the
+  verifier rejected a draft", which on a merely reformulated question never happened. Without the
+  reset such an answer would be labelled `baja`, reporting a generator failure that did not occur.
 - **"No sé" counts as grounded.** `GROUNDING_PROMPT` says so explicitly: `INITIAL_PROMPT` forces
   *"No sé la respuesta basada en la información proporcionada."* when the context falls short, and
   flagging that would spend two Llama calls replacing one honest refusal with another.
@@ -187,9 +226,17 @@ that are not there (`no_fundamentada`).
   means it may cover it but what was written could not be traced back. Like the out-of-scope answer
   it does not start with `"Error:"`: withholding an unverifiable answer is the mechanism working.
 - **Cost.** Answered question, happy path: +1 Phi call. Worst case with a failed verification:
-  +2 Phi calls and +1 Llama call. No extra RAM: the verifier reuses the same Phi client. Longest
-  possible walk through the full graph is 13 nodes (3 retrievals, 3 grades, 2 reformulations, 2
-  generations, 2 verifications, 1 fallback), inside LangGraph's default recursion limit of 25.
+  +2 Phi calls and +1 Llama call. No extra RAM: the verifier reuses the same Phi client.
+
+  The longest walk grew when the escape hatch gained its edge to `reformulate_query`. Driving both
+  loops to exhaustion on one question with adversarial stubs **measures 18 super-steps, 6 generations
+  and 8 control calls** (`test_the_worst_case_walk_stays_inside_the_default_recursion_limit`; the
+  arithmetic ceiling is 20). Still inside LangGraph's default recursion limit of 25, but no longer by
+  much — raising either cap means raising `recursion_limit` with it, and the test is pinned to the
+  measured figure so that it fails here rather than in production. At the latencies measured below,
+  that worst case is roughly **1h30m for a single question**, on a serial queue. It is the price of
+  the loop ever running at all; how often it is actually reached is unmeasured, and #32 (no repeats
+  yet) has to land before any rate can be claimed.
 
   **A Phi call is not the cheap one.** This paragraph used to say "Llama on CPU is the expensive
   one". Measured on 2026-09-10, on the 16 GB target box, that is backwards:
