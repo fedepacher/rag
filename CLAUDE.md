@@ -337,6 +337,43 @@ documento"* and the `"No sé la respuesta..."` escape hatch. The generator was a
 parametric memory with no way to know it, and shipping the result with a confidence note. Deriving
 the value is what stops `num_ctx`, `RETRIEVAL_K` and the chunk size from drifting apart again.
 
+### Extraction noise is filtered out of the corpus
+
+`rag/document_loader.py` drops runs of `MIN_NOISE_RUN_LINES` (6) or more consecutive
+non-prose lines from every document, in `textualize_file`, before anything is chunked.
+A line is prose if it holds a four-letter-or-longer word with a vowel.
+
+The measurement behind that threshold, over the 15 course documents:
+
+| run length | 1 | 2 | 3-4 | 5-6 | 7-9 | 10-19 | 20+ |
+|---|---|---|---|---|---|---|---|
+| mean chars/line | **20.9** | 12.1 | 8.5 | 8.1 | 6.9 | 6.6 | 5.6 |
+
+- **The run is the signal, not the line.** 39% of content lines hold no plausible word,
+  so a per-line filter would delete 39% of the corpus — including
+  `Tn = 290 K ( F − l). (233)` and `θ1 = θ2 e −(to/D − to) / τ … (A7)`, which survive
+  extraction intact and *are* the course content. Those live in runs of one, which is
+  why runs of one average 20.9 characters and runs of twenty average 5.6.
+- **Six, not five and not ten.** A measured run of five in `disipa.pdf`
+  (`T a + P.RT ja ≤ Tj máx`) is still readable, so the line sits above it. Issue #30's
+  reported block is a run of **nine**, so anything above nine would not have fixed the
+  bug that prompted the work.
+- **Blank lines are transparent** — they neither start nor break a run. `pypdf` emits
+  them inside mangled formula blocks, so treating a blank as prose would split one long
+  run into two short ones and let both through.
+- **Effect.** 4.0% of corpus characters removed (464286 → 445880), chunk count 163 → 148.
+  The seven `Amplificación - *.pdf` files are byte-for-byte unchanged (they measure 0%
+  noise); the damage is in the older scanned files, peaking at 8.9% in
+  `Amplificador diferencial.pdf` — the source of issue #30's block.
+- **This does not recover a formula.** Extraction already destroyed these; the filter
+  only stops the wreckage being quoted to a student as if it were an answer. Recovering
+  them needs a different extractor, and that is a separate problem.
+- Self-RAG could never have caught this. The debris *is* traceable to the retrieved
+  chunks, so `fundamentada` was the correct verdict and `alta` the correct label.
+  Grounding verification checks traceability, not readability.
+- Changing the threshold changes the chunk text, so `get_index_hash` changes and the
+  FAISS index rebuilds on the next boot.
+
 ### Dependency pinning
 
 All three requirements files are full locks (`pip freeze`), each with a header naming the direct
