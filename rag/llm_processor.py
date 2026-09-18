@@ -820,6 +820,14 @@ class LLMProcessorOllama(BaseLLMProcessor):
         logging.debug("Waiting for LLM response")
         llm_response = self.llm.invoke(prompt)
         answer = llm_response if isinstance(llm_response, str) else str(llm_response)
+        # The only marker between the relevance verdict and the grounding verdict. Without
+        # it those two timestamps bound `generate` and `verify_grounding` together, which
+        # is what made the 817-1091 s block in Run E unsplittable and left #34 -- "does the
+        # control model really cost more than the generator" -- unanswerable. Length rather
+        # than the text: it makes a runaway visible in the log without dumping the answer,
+        # and a runaway is what cost 2 h 39 min before num_predict was enforced.
+        logging.info(f"Generation complete (attempt {generation_attempts}/{MAX_GENERATION_ATTEMPTS}), "
+                     f"{len(answer)} chars")
         return {"answer": answer, "generation_attempts": generation_attempts}
 
     @staticmethod

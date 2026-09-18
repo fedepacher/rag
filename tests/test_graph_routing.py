@@ -8,6 +8,8 @@ acceptance criteria that otherwise need a 1h47m pipeline run on the target box.
 ``LLMProcessorOllama.__init__`` only compiles PromptTemplates, so a processor can be
 built with ``llm=None`` and a stub grader without reaching the network.
 """
+import logging
+
 import pytest
 
 from rag.llm_processor import (
@@ -419,3 +421,53 @@ class TestConfidenceNoteWording:
         body, _, note = annotated.partition(CONFIDENCE_NOTE_SEPARATOR)
         assert body == REAL_ANSWER
         assert note == CONFIDENCE_NOTES[CONFIDENCE_HIGH]
+
+
+# --- generate_node's completion log (#38) -----------------------------------------
+#
+# The relevance verdict is logged before generation and the grounding verdict after
+# verification, so with nothing in between those two timestamps bound `generate` and
+# `verify_grounding` together. Run E measured that block at 817-1091 s and could not
+# split it, which is why #34 -- "does the control model really cost more than the
+# generator" -- is currently unanswerable.
+
+
+class TestGenerationCompletionLog:
+    """One log line is the whole feature; a test is what stops it being tidied away."""
+
+    def _generate(self, caplog, answer=REAL_ANSWER, attempts=0):
+        processor = LLMProcessorOllama(llm=ScriptedLLM(answer), embedding=None,
+                                       context_length=1200, grader_llm=StubGraderLLM())
+        with caplog.at_level(logging.INFO):
+            update = processor.generate_node({
+                "question": "¿Qué es un FET?",
+                "search_query": "¿Qué es un FET?",
+                "retrieved_docs": [StubDoc("Un FET es un transistor.")],
+                "generation_attempts": attempts,
+            })
+        return update, caplog.text
+
+    def test_generation_completion_is_logged_at_info(self, caplog):
+        _, text = self._generate(caplog)
+        assert "Generation complete" in text
+
+    def test_the_log_names_the_attempt_and_its_bound(self, caplog):
+        _, text = self._generate(caplog, attempts=1)
+        assert f"2/{MAX_GENERATION_ATTEMPTS}" in text
+
+    def test_the_log_reports_the_answer_length(self, caplog):
+        """Length is what makes a runaway visible in the log without reading the text.
+        The 2026-09-10 repetition loop reached 18673 tokens before num_predict existed."""
+        _, text = self._generate(caplog)
+        assert str(len(REAL_ANSWER)) in text
+
+    def test_the_escape_hatch_is_logged_too(self, caplog):
+        """A "No sé" is still a completed generation and still costs the full call, so
+        leaving it unlogged would lose the latency of exactly the questions that go on
+        to reformulate."""
+        _, text = self._generate(caplog, answer=ESCAPE_HATCH)
+        assert "Generation complete" in text
+
+    def test_the_node_still_returns_only_the_answer_and_the_counter(self, caplog):
+        update, _ = self._generate(caplog)
+        assert update == {"answer": REAL_ANSWER, "generation_attempts": 1}

@@ -15,6 +15,17 @@ services:
           - database
     volumes:
       - mysql_data:/var/lib/mysql
+    # `api` used to wait on a bare depends_on, which only waits for the container to
+    # START, and then raced a 15-second wait-for-it.sh. When the database came back up
+    # attached to zero networks, api died with a DNS error naming `database` while
+    # `docker compose ps` showed the database as a healthy-looking `Up` — the real cause
+    # named nowhere. See #37.
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-prag-system"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
 
   mongodb:
     image: mongo:latest
@@ -71,8 +82,10 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - database
-      - mongodb
+      database:
+        condition: service_healthy
+      mongodb:
+        condition: service_started
     environment:
       DB_NAME: test_sql
       DB_USER: rag-system
@@ -117,6 +130,19 @@ services:
       retries: 5
     volumes:
       - ollama:/root/.ollama
+      # Without this the index lives in the container's writable layer, so every
+      # `down` or `--build` wipes it and the next boot spends ~14.5 min re-embedding
+      # 148 chunks at ~6 s each on CPU before answering anything. That cost is paid
+      # more often now, because injecting RAG_COMMIT means rebuilding the image
+      # whenever the commit changes.
+      #
+      # Safe only because get_index_hash covers the embedding model as well as the
+      # chunk text (6729bec). Before that, a persisted index would have been reloaded
+      # with 384-dimensional GPT4All vectors against a 1024-dimensional bge-m3 model
+      # and retrieval would have degraded while looking healthy. The missing volume
+      # was accidentally hiding that bug — luck, not design, and this removes the
+      # luck. tests/test_index_invalidation.py pins the invalidation.
+      - faiss_index:/app/resources/faiss_index
     environment:
       API_URL: "http://api:8000"
       DOCUMENT_LOCATION: resources/files
@@ -137,8 +163,10 @@ services:
       dockerfile: Dockerfile_email
     #command: ["python", "-c", "while True: pass"]   # solo para probar
     depends_on:
-      - database
-      - mongodb
+      database:
+        condition: service_healthy
+      mongodb:
+        condition: service_started
     environment:
       DB_NAME: test_sql
       DB_USER: rag-system
@@ -175,6 +203,7 @@ volumes:
   ollama:
   mysql_data:
   mongodb_data:
+  faiss_index:
 
 networks:
   rag_network:
