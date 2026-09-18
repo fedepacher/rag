@@ -428,7 +428,8 @@ Everything needed to measure the two pipelines against the course bibliography, 
 | `run_baseline.py` | Measures one arm (documented in `BASELINE.md`) | Yes |
 | `compare_runs.py` | Diffs a classic and a CRAG results file (documented in `AB_TESTING.md`) | No — stdlib only |
 | `eval_io.py` | Results-file format shared by both. Imports nothing from `rag/` on purpose, so the comparison runs on a laptop | No |
-| `STATUS.md` | What is implemented vs. what is still unmeasured, and who unblocks each item | — |
+| `STATUS.md` | What has been observed vs. what is still unmeasured, and who unblocks each item. Also the list of claims a write-up cannot support | — |
+| `EVOLUTION.md` | How the system changed 2026-09-09 → 09-18, every figure traced to its measurement, and the gaps named. Read its last two sections before quoting a number | — |
 
 Run both arms inside the `rag` container, on the target hardware, classic first:
 

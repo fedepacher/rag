@@ -66,3 +66,9 @@ See `BASELINE.md` for how to run it and what it writes, and `AB_TESTING.md` for
 comparing the two arms with `compare_runs.py`. It refuses to start while
 `dataset.jsonl` is missing, so the tooling stays inert until the instructors
 deliver the questions.
+
+Two documents cover what happened in the meantime, because the system was exercised
+by hand through the production email path while this harness waited: `STATUS.md` for
+what has been observed against what is still unmeasured, and `EVOLUTION.md` for how
+the system changed and what each figure rests on. Neither is a substitute for a run
+against these questions — both say so themselves.
