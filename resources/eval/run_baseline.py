@@ -59,7 +59,7 @@ if EVAL_DIR not in sys.path:
     sys.path.insert(0, EVAL_DIR)
 
 from eval_io import (PIPELINE_ERROR_PREFIX, QUALITY_CRITERIA, SCHEMA_VERSION,  # noqa: E402
-                     append_record, build_output_path, is_successful, load_records,
+                     append_record, build_output_path, build_provenance, is_successful, load_records,
                      load_recorded_ids, pipeline_label, record_pipeline, summarize_latencies,
                      write_summary)
 from rag.document_loader import LocalDocumentLoader  # noqa: E402
@@ -242,7 +242,8 @@ def load_dataset(path: str) -> List[Dict[str, Any]]:
 
 
 def build_record(entry: Dict[str, Any], answer: str, latency_sec: float,
-                 crag_stats: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                 crag_stats: Optional[Dict[str, Any]],
+                 provenance: Dict[str, Any]) -> Dict[str, Any]:
     """Assemble the result record for a single measured question.
 
     Args:
@@ -255,6 +256,10 @@ def build_record(entry: Dict[str, Any], answer: str, latency_sec: float,
             and did nothing" are different facts, and a comparison that confused the two
             would report a reformulation rate of zero for a pipeline that has no
             reformulation node at all.
+        provenance: Commit, dirty flag and corpus hash of the system being measured.
+            Stored per record, not only in the summary, because the harness resumes: a
+            run interrupted and continued after a code change writes records from two
+            systems into one file, and only a per-record block can expose that.
 
     Returns:
         Dict[str, Any]: Record ready to be appended to the results file, with the
@@ -262,6 +267,7 @@ def build_record(entry: Dict[str, Any], answer: str, latency_sec: float,
     """
     return {
         "schema_version": SCHEMA_VERSION,
+        "provenance": provenance,
         "id": str(entry['id']),
         "pipeline": pipeline_label(crag_stats is not None),
         "question": entry['question'],
@@ -332,7 +338,8 @@ def summarize_crag(records: List[Dict[str, Any]]) -> Dict[str, Any]:
 
 def build_summary(records: List[Dict[str, Any]], args: argparse.Namespace,
                   warmup_latency_sec: Optional[float], index_build_sec: Optional[float],
-                  chunk_count: Optional[int]) -> Dict[str, Any]:
+                  chunk_count: Optional[int],
+                  corpus_hash: Optional[str] = None) -> Dict[str, Any]:
     """Assemble the run summary written next to the results file.
 
     Args:
@@ -341,6 +348,10 @@ def build_summary(records: List[Dict[str, Any]], args: argparse.Namespace,
         warmup_latency_sec: Latency of the discarded warm-up call, if any.
         index_build_sec: Seconds spent loading or rebuilding the FAISS index.
         chunk_count: Number of context chunks the index was built from.
+        corpus_hash: Hash of the chunks this run retrieved from, or None when the
+            summary is being recomputed from an existing results file and no index was
+            built. Null means "not recorded here", which is not the same fact as a hash
+            that differs -- the per-record blocks still carry the real one.
 
     Returns:
         Dict[str, Any]: Self-describing summary of configuration and latency.
@@ -360,6 +371,7 @@ def build_summary(records: List[Dict[str, Any]], args: argparse.Namespace,
                          "remain the pre-agentic reference point even though production runs CRAG.")
     return {
         "schema_version": SCHEMA_VERSION,
+        "provenance": build_provenance(corpus_hash),
         "generated_at": datetime.now().isoformat(timespec='seconds'),
         "pipeline": pipeline_label(args.crag),
         "pipeline_note": pipeline_note,
@@ -418,7 +430,7 @@ def check_ollama(ollama_url: str) -> None:
 
 
 def prepare_context(document_location: str,
-                    enable_crag: bool) -> Tuple[List[str], Any, Optional[CragInstrumentation], float]:
+                    enable_crag: bool) -> Tuple[List[str], Any, Optional[CragInstrumentation], float, str]:
     """Load the course documents and build or load the FAISS index.
 
     Args:
@@ -428,9 +440,14 @@ def prepare_context(document_location: str,
             relevance grading, no reformulation, control model never loaded.
 
     Returns:
-        Tuple[List[str], Any, Optional[CragInstrumentation], float]: Context chunks, the
-        ready processor, the node counters (None on a classic run) and the seconds spent
-        building or loading the vector store.
+        Tuple[List[str], Any, Optional[CragInstrumentation], float, str]: Context chunks,
+        the ready processor, the node counters (None on a classic run), the seconds spent
+        building or loading the vector store, and the corpus hash this run retrieved from.
+
+        The corpus hash is ``get_index_hash`` over the same chunks the retriever sees, so
+        it covers the chunk text *and* the embedding model. It is recorded because the
+        course documents are untracked (#35): the corpus can change with no commit to
+        show for it, which is exactly what ``dbed292`` did between two measured runs.
     """
     logging.info(f"Loading course documents from '{document_location}'")
     document = LocalDocumentLoader(document_location).load_document()
@@ -450,7 +467,9 @@ def prepare_context(document_location: str,
     llm.build_or_load_vectorstore(context_chunked)
     index_build_sec = time.perf_counter() - index_start
     logging.info(f"FAISS index ready in {index_build_sec:.1f} s")
-    return context_chunked, llm, instrumentation, index_build_sec
+    corpus_hash = llm.get_index_hash(context_chunked)
+    logging.info(f"Corpus hash: {corpus_hash[:12]}")
+    return context_chunked, llm, instrumentation, index_build_sec, corpus_hash
 
 
 def measure(llm: Any, question: str, context_chunked: List[str],
@@ -595,7 +614,11 @@ def run_evaluation(args: argparse.Namespace) -> int:
 
     check_ollama(args.ollama_url)
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
-    context_chunked, llm, instrumentation, index_build_sec = prepare_context(args.document_location, args.crag)
+    context_chunked, llm, instrumentation, index_build_sec, corpus_hash = prepare_context(
+        args.document_location, args.crag)
+    # Resolved once, before the first question, so every record of this run carries the
+    # same block even if the working tree is edited while a two-hour run is in flight.
+    provenance = build_provenance(corpus_hash)
 
     warmup_latency_sec: Optional[float] = None
     if args.warmup:
@@ -614,10 +637,10 @@ def run_evaluation(args: argparse.Namespace) -> int:
                          f"{crag_stats['retrievals']} retrieval(s), "
                          f"out_of_scope={crag_stats['out_of_scope']}")
         logging.info(f"Question '{entry_id}' answered in {latency_sec:.1f} s")
-        append_record(args.output, build_record(entry, answer, latency_sec, crag_stats))
+        append_record(args.output, build_record(entry, answer, latency_sec, crag_stats, provenance))
 
     summary = build_summary(load_records(args.output), args, warmup_latency_sec, index_build_sec,
-                            len(context_chunked))
+                            len(context_chunked), corpus_hash)
     write_summary(args.output, summary)
     print_summary(summary)
     return 0

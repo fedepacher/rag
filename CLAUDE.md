@@ -33,23 +33,35 @@ docker compose up --build api
 ```
 
 ```bash
-# Graph routing tests (no Ollama, no corpus, no FAISS — ~1s)
+# Unit tests (no Ollama, no corpus, no FAISS — ~2s)
 docker run --rm --entrypoint sh -v "$PWD":/app -w /app rag-rag:latest \
   -c "python -m pytest tests/ -q"
 ```
 
-`tests/test_graph_routing.py` is the only test module. It covers what is pure in the CRAG/Self-RAG
-graph — `is_no_answer`, the three routing functions, `derive_confidence`, the compiled edge set and
-the loop bounds — with stub LLMs and a stub vectorstore, so the acceptance criteria that would
-otherwise need a 1h47m pipeline run are checked in under a second. It deliberately does **not** test
-answer quality: that needs the real models and a human reading the output, which is what
-`resources/eval/` is for.
+Three test modules, all fast and all offline:
+
+| Module | Covers |
+|--------|--------|
+| `tests/test_graph_routing.py` | What is pure in the CRAG/Self-RAG graph: `is_no_answer`, the three routing functions, `derive_confidence`, the compiled edge set and the loop bounds, with stub LLMs and a stub vectorstore |
+| `tests/test_extraction_noise.py` | `is_prose_line` / `strip_extraction_noise`, with fixtures taken verbatim from the corpus |
+| `tests/test_eval_provenance.py` | The results-file provenance block and the comparison guard (#32) |
+
+Together they check acceptance criteria that would otherwise need a 1h47m pipeline run.
+They deliberately do **not** test answer quality: that needs the real models and a human
+reading the output, which is what `resources/eval/` is for.
 
 Tests run in the `rag` image because importing `rag/llm_processor.py` needs the real
 `langgraph`/`langchain` stack; `--entrypoint sh` is required because the bind mount shadows
 `entrypoint.sh`. `pytest` is back in `requirements_rag.txt` (it had been dropped when the locks were
 pinned, since it shipped a test dependency for tests that did not exist) — the lock is the runtime
 image's, and there is no separate dev image to put it in.
+
+**Three tests skip in that container, by design.** The rag image ships no `git` binary, so the
+tests covering `git_provenance`'s shell-out fallback are `skipif`-guarded. They are not dead: the
+fallback exists for a developer running the harness on a host checkout, where git is present by
+definition, and `pytest tests/test_eval_provenance.py` on such a host runs all 30. The path that
+matters in the container — reading `RAG_COMMIT`/`RAG_DIRTY` — is covered unconditionally, because
+that is the only path that can work there at all.
 
 ## Pre-flight: passwords.json
 
@@ -435,7 +447,55 @@ Two gaps in the CRAG arm's record, both known:
 - **Self-RAG is timed but not counted.** Grounding verification runs and is included in the measured latency, but `CragInstrumentation` does not wrap `verify_grounding_node` or `generate_node`, so grounding verdicts, regeneration count, ungrounded-fallback rate and the confidence level have no fields of their own.
 - **The confidence note is inside `generated_answer`.** Split on `"\n\n---\n"` to recover the bare answer, and score the answer rather than the note.
 
-Records carry `schema_version` (currently `3`; `1` was the #13 shape with no `pipeline`/`crag`/`out_of_scope` fields, `2` added them, `3` renames the config key `chunk_context_length` to `chunk_size_tokens`). No results file was ever committed at any version, so nothing needed migrating.
+Records carry `schema_version` (currently `4`; `1` was the #13 shape with no `pipeline`/`crag`/`out_of_scope` fields, `2` added them, `3` renames the config key `chunk_context_length` to `chunk_size_tokens`, `4` adds the `provenance` block below). No results file was ever committed at any version, so nothing needed migrating.
+
+**A results file states which system produced it, and the comparison refuses to cross
+systems.** Every record and summary carries `provenance`: `commit`, `dirty` and
+`corpus_hash`. This is issue #32, and the defect it fixes is not what the issue
+originally claimed. The pipeline was thought to be non-deterministic at temperature 0
+because the same six questions flipped outcomes across four runs; measured, the same
+question at the same commit reproduces **byte-identically** (4/4 samples, full-body
+SHA-256, one of them from a separate session hours earlier). What actually differed was
+the code: every transition in that four-run table spans at least one functional commit,
+and `dbed292` **deleted a course PDF** between two of them, which changes retrieval
+with nothing in the diff a reader would look at.
+
+- **The corpus hash is the field a commit SHA cannot replace.** The course documents are
+  untracked, so the corpus can change with no commit to show for it. `get_index_hash`
+  covers the chunk text *and* the embedding model, which is the same reason it gates the
+  FAISS rebuild.
+- **Unknown counts as a mismatch.** `compare_runs.py` refuses when the two runs differ
+  *and* when either cannot identify itself. Treating null as "matches" is precisely what
+  let four different systems be read as four repeats of one.
+  `--force-mismatched-provenance` overrides it and stamps the report with a banner
+  saying its numbers cannot be attributed to CRAG.
+- **Provenance is per record, not only per summary,** because the harness resumes: a run
+  continued after a code change writes records from two systems into one file, and only
+  a per-record block can expose it. `compare_runs.py` refuses such a file outright.
+- **`dirty` is `null` when unestablished, never `false`** — defaulting to clean would let
+  a build from a modified tree claim its SHA identifies it. It is read with
+  `--untracked-files=no`, because the course PDFs are untracked by design and counting
+  them would mark every run dirty.
+- **The commit has to be injected at build time.** The harness runs via
+  `docker compose exec rag`, and the image has no `git` binary and no `.git` directory —
+  the source is `COPY`ed in. `eval_io.git_provenance` reads `RAG_COMMIT`/`RAG_DIRTY`
+  first and only falls back to shelling out to git (which is what makes a host checkout
+  work). `Dockerfile-combined` takes both as `ARG`s and `docker-compose.yml` forwards
+  them:
+  ```bash
+  RAG_COMMIT=$(git rev-parse HEAD) \
+  RAG_DIRTY=$([ -n "$(git status --porcelain --untracked-files=no)" ] && echo 1 || echo 0) \
+  docker compose build rag
+  ```
+  Forgetting them is safe rather than silent: provenance is null, so the comparison
+  refuses. A missing build arg produces a refusal, never a wrong number.
+- **Latency is deliberately not addressed.** The four byte-identical samples took 21m46s,
+  32m26s, 29m19s and 24m36s — a 49% spread on identical work. Response time is not a goal
+  for this project: answers are delivered asynchronously by email precisely because the
+  system runs on a low-spec CPU-only box, and with fewer than 15 students asking
+  occasionally, throughput is not a constraint either. So the variance is recorded as a
+  property of the system and not treated as a problem; the `--repeats N` proposal in #32
+  was dropped rather than rescoped.
 
 **There is no runnable "v1.0" to compare against.** The comparison originally asked for was against the Mistral 7B / `k=2` / `RetrievalQA` system, but the model swap, the `k` bump and the LangGraph migration each replaced it *in place* rather than keeping it configurable, so `--no-crag` is the Llama 3.1 8B / `k=4` baseline, not v1.0. The last commit where v1.0 is intact is `87ca5f3`. `AB_TESTING.md` documents the two ways out — measure `87ca5f3` in a worktree with a backported harness, or redeclare the current baseline as the reference point — and the decision has not been made.
 

@@ -48,7 +48,13 @@ REPO_ROOT = os.path.abspath(os.path.join(EVAL_DIR, os.pardir, os.pardir))
 
 from eval_io import (PIPELINE_CLASSIC, PIPELINE_CRAG, PIPELINE_FILE_PREFIX,  # noqa: E402
                      QUALITY_CRITERIA, RESULTS_DIR, is_successful, load_records,
-                     load_summary, record_pipeline, summarize_latencies)
+                     load_summary, provenance_mismatch, record_pipeline,
+                     record_provenance, summarize_latencies)
+
+# Flag that lets an operator compare two runs this tool refuses to pair. Named in the
+# error message on purpose: someone who knows the two runs are comparable needs to be
+# shown the way through, or they will edit the results files by hand instead.
+FORCE_PROVENANCE_FLAG = "--force-mismatched-provenance"
 
 # Configuration keys that must match for the two runs to be a fair comparison. A
 # difference in any of them means the report would be measuring that difference as much
@@ -150,6 +156,72 @@ def assert_pipelines(records: List[Dict[str, Any]], expected: str, path: str) ->
             f"'{path}' is being compared as the {expected} arm but contains records from {sorted(found)}. "
             f"Check the --baseline / --crag arguments."
         )
+
+
+def file_provenance(records: List[Dict[str, Any]], path: str) -> Dict[str, Optional[Any]]:
+    """Return the single provenance block a results file was produced under.
+
+    Args:
+        records: Records read from the file.
+        path: Path of the file, for the error message.
+
+    Returns:
+        Dict[str, Optional[Any]]: The provenance every record in the file shares.
+
+    Raises:
+        ValueError: If the records disagree. Resuming a run after a code change writes
+            records from two systems into one file, and nothing else in this tool would
+            notice -- the file would keep its name, its pipeline label and its ids.
+    """
+    distinct = {json.dumps(record_provenance(record), sort_keys=True) for record in records}
+    if len(distinct) > 1:
+        raise ValueError(
+            f"'{path}' holds records from {len(distinct)} different systems. It was most likely resumed "
+            f"across a code change, which makes the file itself incomparable; re-run it from scratch."
+        )
+    return record_provenance(records[0])
+
+
+def assert_same_provenance(baseline_records: List[Dict[str, Any]],
+                           crag_records: List[Dict[str, Any]],
+                           baseline_path: str, crag_path: str,
+                           force: bool = False) -> None:
+    """Refuse to compare two runs that did not come from the same system.
+
+    This is the guard issue #32 exists for. Four runs of the same six questions were
+    read as repeats of one pipeline; every transition between them spanned a functional
+    commit, and one of those commits deleted a course PDF, which changes retrieval
+    invisibly. Every per-question difference attributed to variance had a code change
+    behind it. A comparison that cannot state both runs came from the same code and the
+    same corpus is not measuring CRAG, and should not be allowed to look as if it were.
+
+    Args:
+        baseline_records: Records of the classic arm.
+        crag_records: Records of the CRAG arm.
+        baseline_path: Path of the classic results file.
+        crag_path: Path of the CRAG results file.
+        force: Skip the check. For an operator who knows why the two differ.
+
+    Raises:
+        ValueError: If the two runs differ, or if either cannot identify itself.
+    """
+    baseline_provenance = file_provenance(baseline_records, baseline_path)
+    crag_provenance = file_provenance(crag_records, crag_path)
+    if force:
+        return
+    mismatched = provenance_mismatch(baseline_provenance, crag_provenance)
+    if not mismatched:
+        return
+    detail = ", ".join(
+        f"{field}: {baseline_provenance.get(field)!r} vs {crag_provenance.get(field)!r}"
+        for field in mismatched
+    )
+    raise ValueError(
+        f"'{baseline_path}' and '{crag_path}' did not come from the same system ({detail}). "
+        f"A difference here is measured as if it were CRAG. Re-run both arms at one commit over one "
+        f"corpus, or pass {FORCE_PROVENANCE_FLAG} if you know why they differ. Note that an unknown "
+        f"value counts as a mismatch: results files written before schema 4 recorded no provenance."
+    )
 
 
 def percent_delta(baseline_value: Optional[float], crag_value: Optional[float]) -> Optional[float]:
@@ -401,10 +473,13 @@ def compare_configuration(baseline_summary: Optional[Dict[str, Any]],
             "max_crag_iterations": crag_config.get('max_crag_iterations')}
 
 
-def build_comparison(baseline_path: str, crag_path: str) -> Dict[str, Any]:
+def build_comparison(baseline_path: str, crag_path: str,
+                     force_mismatched_provenance: bool = False) -> Dict[str, Any]:
     """Read both results files and compute every section of the comparison.
 
     Args:
+        force_mismatched_provenance: Compare two runs from different systems anyway.
+            Defaults to refusing, because the refusal is the point of issue #32.
         baseline_path: Path of the classic results file.
         crag_path: Path of the CRAG results file.
 
@@ -422,6 +497,8 @@ def build_comparison(baseline_path: str, crag_path: str) -> Dict[str, Any]:
         raise ValueError(f"'{crag_path}' holds no readable record")
     assert_pipelines(baseline_records, PIPELINE_CLASSIC, baseline_path)
     assert_pipelines(crag_records, PIPELINE_CRAG, crag_path)
+    assert_same_provenance(baseline_records, crag_records, baseline_path, crag_path,
+                           force=force_mismatched_provenance)
 
     baseline = index_by_id(baseline_records)
     crag = index_by_id(crag_records)
@@ -436,6 +513,14 @@ def build_comparison(baseline_path: str, crag_path: str) -> Dict[str, Any]:
     return {
         "generated_at": datetime.now().isoformat(timespec='seconds'),
         "inputs": {"baseline": baseline_path, "crag": crag_path},
+        # Recorded on every comparison, not only on a forced one: a report read six
+        # months from now has to say which system produced each arm, and the whole
+        # defect behind #32 was numbers circulating without that context.
+        "provenance": {
+            "baseline": file_provenance(baseline_records, baseline_path),
+            "crag": file_provenance(crag_records, crag_path),
+            "forced": force_mismatched_provenance
+        },
         "configuration": compare_configuration(load_summary(baseline_path), load_summary(crag_path)),
         "coverage": {
             "baseline_questions": len(baseline),
@@ -473,6 +558,45 @@ def render_latency_table(comparison: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def render_provenance(provenance: Dict[str, Any]) -> List[str]:
+    """Render the provenance section that labels every report.
+
+    Args:
+        provenance: The ``provenance`` block of a comparison.
+
+    Returns:
+        List[str]: Markdown lines, ending in a blank line.
+    """
+    def describe(block: Dict[str, Optional[Any]]) -> str:
+        commit = block.get('commit')
+        if commit is None:
+            return "unrecorded (results file predates schema 4)"
+        dirty = block.get('dirty')
+        suffix = {True: " **+ uncommitted changes**", False: "", None: " (dirty flag unrecorded)"}[dirty]
+        return f"`{commit[:12]}`{suffix}"
+
+    def describe_corpus(block: Dict[str, Optional[Any]]) -> str:
+        corpus_hash = block.get('corpus_hash')
+        return f"`{corpus_hash[:12]}`" if corpus_hash else "unrecorded"
+
+    baseline, crag = provenance['baseline'], provenance['crag']
+    lines = [
+        "## Provenance", "",
+        "| | Classic | CRAG |",
+        "|-|---------|------|",
+        f"| Commit | {describe(baseline)} | {describe(crag)} |",
+        f"| Corpus | {describe_corpus(baseline)} | {describe_corpus(crag)} |",
+        ""
+    ]
+    if provenance.get('forced'):
+        lines += [
+            f"> **This comparison was forced with `{FORCE_PROVENANCE_FLAG}`.** The two arms did not come",
+            "> from the same system, so any difference below is the sum of CRAG and whatever else changed",
+            "> between them. Do not quote a number from this report as an effect of CRAG.", ""
+        ]
+    return lines
+
+
 def render_report(comparison: Dict[str, Any]) -> str:
     """Render the comparison as a Markdown report.
 
@@ -494,6 +618,7 @@ def render_report(comparison: Dict[str, Any]) -> str:
         ""
     ]
 
+    lines += render_provenance(comparison['provenance'])
     lines += ["## Configuration", ""]
     if not configuration['available']:
         lines += ["> One of the two `.summary.json` files is missing, so the run configurations could not be",
@@ -671,6 +796,11 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
                         help="Write the Markdown report to this file as well as to stdout")
     parser.add_argument('--json', dest='json_output', default=None,
                         help="Write the computed comparison as JSON to this file")
+    parser.add_argument(FORCE_PROVENANCE_FLAG, dest='force_mismatched_provenance',
+                        action='store_true',
+                        help="Compare two runs that did not come from the same commit or corpus. "
+                             "The report is labelled as forced and its numbers cannot be attributed "
+                             "to CRAG alone.")
     parser.add_argument('--quiet', action='store_true',
                         help="Do not print the report to stdout (use with --output or --json)")
     parser.add_argument('--log-level', default='WARNING',
@@ -693,7 +823,8 @@ def main() -> int:
     try:
         baseline_path = resolve_input(args.baseline, args.results_dir, PIPELINE_CLASSIC)
         crag_path = resolve_input(args.crag, args.results_dir, PIPELINE_CRAG)
-        comparison = build_comparison(baseline_path, crag_path)
+        comparison = build_comparison(baseline_path, crag_path,
+                                      force_mismatched_provenance=args.force_mismatched_provenance)
     except (FileNotFoundError, ValueError) as err:
         logging.error(str(err))
         return 1

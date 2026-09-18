@@ -100,6 +100,11 @@ services:
     build:
       context: .
       dockerfile:  Dockerfile-combined
+      # Provenance for the evaluation harness (#32). Empty unless exported before the
+      # build; see the ARG block at the end of Dockerfile-combined for the command.
+      args:
+        RAG_COMMIT: ${RAG_COMMIT:-}
+        RAG_DIRTY: ${RAG_DIRTY:-}
     depends_on:
       - database
       - mongodb

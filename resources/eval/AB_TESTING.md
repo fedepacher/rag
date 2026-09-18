@@ -263,6 +263,9 @@ produce it by hand instead.
 | Same file passed as both arms | Same refusal, for the same reason |
 | Two `crag_*.jsonl` in `results/` | Auto-discovery refuses; pass the path explicitly |
 | Out-of-scope answer in a classic file | Report prints a banner — the classic graph cannot produce one |
+| Two runs from different commits or corpora | Refuses; pass `--force-mismatched-provenance` and the report is stamped as unattributable |
+| Either run written before schema 4 | Same refusal — unknown provenance is a mismatch, not a match |
+| One results file resumed across a code change | Refuses; its own records disagree, so the file is incomparable with itself |
 
 ## Results schema versioning
 
@@ -272,11 +275,69 @@ Records and summaries carry `schema_version`, defined in `eval_io.py`:
 |---------|-------|
 | 1 | Issue #13. Classic records only: no `schema_version`, `pipeline`, `out_of_scope` or `crag`. |
 | 2 | Issue #16. Adds all four, so the two arms are comparable record by record. |
+| 3 | Renames the config key `chunk_context_length` to `chunk_size_tokens`. |
+| 4 | Issue #32. Adds `provenance` to every record and summary: `commit`, `dirty`, `corpus_hash`. |
 
 **No v1 file was ever committed** — no run has happened — so v2 broke nothing in
 practice. Readers treat a missing `schema_version` as 1 and a missing `crag` block
 as "not measured" rather than as zero iterations; `compare_runs.py` degrades to
 skipping the per-iteration breakdown rather than reporting it as all-zeroes.
+
+A missing `provenance` block is **not** treated so gently. It reads as entirely
+unknown, and `compare_runs.py` refuses to diff a run it cannot identify — see below.
+
+## Provenance: what a results file has to say about itself
+
+Four runs of the same six questions were once compared as repeats of one system.
+They were four different systems: every transition between them spanned at least one
+functional commit, and one of them (`dbed292`) **deleted a course PDF**, which changes
+retrieval with no code change a reader could see. Every per-question difference that
+had been attributed to variance had a code change behind it.
+
+So every record and summary now carries:
+
+| Field | Meaning |
+|-------|---------|
+| `commit` | The commit the measured code came from, or null |
+| `dirty` | Whether tracked files were modified. `null` means "not established", which is deliberately not `false` |
+| `corpus_hash` | `get_index_hash` over the chunks retrieval actually saw — covers the chunk text **and** the embedding model |
+
+**The corpus hash is the one a commit SHA cannot replace.** The course documents are
+untracked (see #35), so the corpus can change with no commit to show for it.
+
+`compare_runs.py` refuses to diff two runs whose provenance differs, *and* refuses
+when either side cannot identify itself — an unknown value counts as a mismatch,
+because treating null as "matches" is the exact mistake that made four runs look like
+one. `--force-mismatched-provenance` overrides it and stamps the report with a banner
+saying its numbers cannot be attributed to CRAG.
+
+`dirty` is reported as a mismatch only when it is known to be `true` on either side: a
+dirty tree means the SHA is not an identity. An *unknown* dirty flag is not flagged,
+because a containerised run records one whenever no build arg was passed, and refusing
+on every such comparison would train the operator to pass the override by reflex.
+
+### Injecting the commit at build time
+
+The harness runs as `docker compose exec rag …`, and the rag image has **no `git`
+binary and no `.git` directory** — the source is `COPY`ed in at build time. Shelling
+out to git in there could only ever return null, so the commit has to be baked in:
+
+```bash
+RAG_COMMIT=$(git rev-parse HEAD) \
+RAG_DIRTY=$([ -n "$(git status --porcelain --untracked-files=no)" ] && echo 1 || echo 0) \
+docker compose build rag
+```
+
+`eval_io.git_provenance` reads `RAG_COMMIT`/`RAG_DIRTY` first and falls back to
+shelling out to git, which is what makes it work when a developer runs the harness
+directly on a host checkout.
+
+Forgetting the build args is **safe rather than silent**: provenance records null, and
+the comparison refuses. A missing build arg produces a refusal, never a wrong number.
+
+`--untracked-files=no` matters in that command: the course PDFs are untracked by
+design, so counting them would mark every single run dirty and the flag would carry no
+information at all.
 
 ## Files
 

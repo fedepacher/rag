@@ -34,5 +34,22 @@ RUN chmod +x /app/entrypoint.sh
 
 ENV PYTHONPATH=/app
 
+# Provenance of the code baked into this image, for the evaluation harness (#32).
+# The source is COPYed in above, so there is no .git here and no git binary either --
+# `git rev-parse` inside this container could only ever return nothing. The commit has
+# to be injected at build time or it cannot be known at all:
+#
+#   RAG_COMMIT=$(git rev-parse HEAD) \
+#   RAG_DIRTY=$([ -n "$(git status --porcelain --untracked-files=no)" ] && echo 1 || echo 0) \
+#   docker compose build rag
+#
+# Forgetting to pass them is safe rather than silent: eval_io records null, and
+# compare_runs.py refuses to diff a run it cannot identify. A missing build arg
+# produces a refusal, never a wrong number.
+ARG RAG_COMMIT=""
+ARG RAG_DIRTY=""
+ENV RAG_COMMIT=${RAG_COMMIT}
+ENV RAG_DIRTY=${RAG_DIRTY}
+
 # Set the entrypoint script
 ENTRYPOINT ["/app/entrypoint.sh"]

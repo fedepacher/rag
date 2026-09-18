@@ -92,7 +92,7 @@ to a new file instead of overwriting an existing baseline. `--crag` swaps the
 
 | Field | Written by | Description |
 |-------|-----------|-------------|
-| `schema_version` | runner | Version of this record shape, currently `2` |
+| `schema_version` | runner | Version of this record shape, currently `4` |
 | `id`, `question`, `expected_answer`, `source_doc`, `topic`, `difficulty` | runner | Copied from the dataset entry so the record stands alone |
 | `pipeline` | runner | `classic-rag` or `crag`. The record states what produced it, so a renamed file cannot be misread |
 | `generated_answer` | runner | The pipeline's answer, verbatim |
@@ -100,6 +100,7 @@ to a new file instead of overwriting an existing baseline. `--crag` swaps the
 | `pipeline_error` | runner | `true` when the pipeline returned an error instead of an answer |
 | `out_of_scope` | runner | `true` when the answer is the CRAG out-of-scope refusal. Always `false` on this arm — the classic graph has no node that can produce it |
 | `crag` | runner | Iteration counters. Always `null` on this arm; see [`AB_TESTING.md`](AB_TESTING.md) |
+| `provenance` | runner | `commit`, `dirty` and `corpus_hash` of the measured system. Resolved once before the first question, so a working tree edited mid-run cannot split one run's records |
 | `measured_at` | runner | ISO 8601 timestamp of the call |
 | `scores` | **instructor** | The four criteria, `null` until scored |
 | `scored_by`, `scored_at` | **instructor** | Who scored it and when |
@@ -112,6 +113,15 @@ for the same reason — "the loop was not there" is not "the loop did nothing".
 Issue #16 added `schema_version`, `pipeline`, `out_of_scope` and `crag` to this
 shape (v1 → v2). No v1 file was ever committed, since no run has happened, so
 nothing on disk needed migrating. Readers treat a missing `schema_version` as 1.
+
+Issue #32 added `provenance` (v3 → v4), because a results file that cannot say which
+commit and which corpus produced it cannot be compared to another one. That is not a
+hypothetical: four runs of the same six questions were read as repeats of one system
+when every transition between them spanned a functional commit, and one of those
+commits deleted a course PDF. `compare_runs.py` now refuses such a pair, and refuses
+a file whose provenance is unknown. The commit is injected at build time —
+`RAG_COMMIT`/`RAG_DIRTY` — because this image ships no git; see
+[`AB_TESTING.md`](AB_TESTING.md) for the build command and the reasoning.
 
 ### Summary
 

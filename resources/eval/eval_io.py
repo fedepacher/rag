@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import statistics
+import subprocess
 from typing import Any, Dict, List, Optional, Set
 
 # Version of the per-record and per-summary shape written by run_baseline.py.
@@ -30,10 +31,29 @@ from typing import Any, Dict, List, Optional, Set
 #       described the value as a context length when it is the chunk size the splitter
 #       counts in cl100k_base tokens, and that misreading is what let chunks grow to 3.4x
 #       the model's context window. No results file in this repo used the old key.
+#   4 - Issue #32. Adds a `provenance` block to every record and summary: the commit, a
+#       dirty-tree flag and the corpus hash. Four runs of the same six questions had been
+#       compared as repeats of one system when every transition between them spanned a
+#       functional commit, and one of those commits deleted a course document. Without
+#       provenance a results file cannot say which system produced it, so a comparison
+#       cannot know whether it is measuring a change or a different program.
 #
-# Readers must treat a missing `schema_version` as 1 and a missing `crag` block as
-# "not measured" rather than as zero iterations.
-SCHEMA_VERSION = 3
+# Readers must treat a missing `schema_version` as 1, a missing `crag` block as
+# "not measured" rather than as zero iterations, and a missing `provenance` block as
+# entirely unknown rather than as matching whatever it is compared against.
+SCHEMA_VERSION = 4
+
+# Provenance is read from the environment before git is consulted, because the harness
+# runs as `docker compose exec rag python resources/eval/run_baseline.py` and the rag
+# image ships no git binary and no .git directory -- the source is COPYed in at build
+# time. Shelling out there could only ever produce nulls. The commit the image was
+# built from, injected as a build arg, is both available and the honest answer for a
+# run of that image.
+COMMIT_ENV_VAR = "RAG_COMMIT"
+DIRTY_ENV_VAR = "RAG_DIRTY"
+
+# Fields of the provenance block, in the order a mismatch is reported.
+PROVENANCE_FIELDS = ("commit", "dirty", "corpus_hash")
 
 RESULTS_DIR = os.path.join("resources", "eval", "results")
 
@@ -55,6 +75,130 @@ QUALITY_CRITERIA = ("pertinencia", "claridad", "precision", "lenguaje")
 # LLMProcessorOllama swallows its own exceptions and returns a message with this prefix
 # instead of raising, so a failed question has to be detected by inspecting the answer.
 PIPELINE_ERROR_PREFIX = "Error:"
+
+
+def _git_output(args: List[str], repo_root: Optional[str]) -> Optional[str]:
+    """Run a read-only git command, returning None instead of raising.
+
+    Args:
+        args: Git arguments, without the leading ``git``.
+        repo_root: Directory to run in, or None for the process working directory.
+
+    Returns:
+        Optional[str]: Stripped stdout, or None when git is missing, the directory is
+        not a repository, or the command fails for any other reason.
+    """
+    try:
+        completed = subprocess.run(["git", *args], cwd=repo_root, capture_output=True,
+                                   text=True, check=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return completed.stdout.strip()
+
+
+def git_provenance(repo_root: Optional[str] = None) -> Dict[str, Optional[Any]]:
+    """Identify the code a run was produced by.
+
+    Reads ``RAG_COMMIT`` / ``RAG_DIRTY`` first and falls back to git. See
+    ``COMMIT_ENV_VAR`` for why the environment has to come first.
+
+    Never raises: a run that cannot identify itself is worth less than one that can,
+    but the measurement is the expensive part and must not be lost over it. Recording
+    null is also honest, and ``provenance_mismatch`` treats null as "unknown" rather
+    than as "matches", so an unidentified run cannot quietly be compared to anything.
+
+    Args:
+        repo_root: Repository to inspect when falling back to git. None uses the
+            process working directory.
+
+    Returns:
+        Dict[str, Optional[Any]]: ``commit`` (40-char hex or None) and ``dirty``
+        (bool or None). ``dirty`` is None when it could not be established, which is
+        deliberately not the same as False -- defaulting to clean would let a build
+        from a modified tree claim its SHA identifies it.
+    """
+    commit = os.getenv(COMMIT_ENV_VAR) or None
+    if commit:
+        dirty_raw = os.getenv(DIRTY_ENV_VAR)
+        dirty = None if dirty_raw in (None, "") else dirty_raw.strip() not in ("0", "false", "False")
+        return {"commit": commit, "dirty": dirty}
+
+    commit = _git_output(["rev-parse", "HEAD"], repo_root) or None
+    if commit is None:
+        return {"commit": None, "dirty": None}
+    # --untracked-files=no on purpose: the course PDFs are untracked by design (#35),
+    # so counting them would report every single run as dirty and the flag would carry
+    # no information at all. A corpus change is caught by the corpus hash instead; what
+    # makes a commit SHA a lie is a modified *tracked* file.
+    status = _git_output(["status", "--porcelain", "--untracked-files=no"], repo_root)
+    return {"commit": commit, "dirty": None if status is None else bool(status)}
+
+
+def build_provenance(corpus_hash: Optional[str],
+                     repo_root: Optional[str] = None) -> Dict[str, Optional[Any]]:
+    """Assemble the provenance block written into records and summaries.
+
+    Args:
+        corpus_hash: ``LLMProcessorOllama.get_index_hash`` over the chunks this run
+            retrieved from, or None when it was not available. The corpus hash is the
+            field a commit SHA cannot replace: the course documents are untracked, so
+            the corpus can change with no commit to show for it -- which is exactly
+            what ``dbed292`` did when it removed a PDF between two measured runs.
+        repo_root: Passed through to ``git_provenance``.
+
+    Returns:
+        Dict[str, Optional[Any]]: ``commit``, ``dirty`` and ``corpus_hash``.
+    """
+    return {**git_provenance(repo_root), "corpus_hash": corpus_hash}
+
+
+def record_provenance(record: Dict[str, Any]) -> Dict[str, Optional[Any]]:
+    """Read the provenance block back out of a record or summary.
+
+    Args:
+        record: A single result record or a run summary.
+
+    Returns:
+        Dict[str, Optional[Any]]: Every provenance field, with anything absent read as
+        None. Schema 3 and earlier carry no block at all and therefore read as entirely
+        unknown, which is the truth about them.
+    """
+    stored = record.get('provenance') or {}
+    return {field: stored.get(field) for field in PROVENANCE_FIELDS}
+
+
+def provenance_mismatch(left: Dict[str, Optional[Any]],
+                        right: Dict[str, Optional[Any]]) -> List[str]:
+    """Report which provenance fields make two runs incomparable.
+
+    An unknown identity counts as a mismatch. Treating null as "matches" is precisely
+    the mistake this guard exists to prevent: it is what allowed four runs on four
+    different commits to be read as four repeats of one system.
+
+    ``dirty`` is only reported when it is known to be True on either side. A dirty tree
+    means the commit SHA is not an identity, so two such runs are not known to be the
+    same system even at the same SHA. An *unknown* dirty flag is not reported, because
+    a containerised run records one whenever no dirty build arg was passed, and firing
+    on every such comparison would train the operator to pass the override by reflex.
+
+    Args:
+        left: Provenance of one run.
+        right: Provenance of the other.
+
+    Returns:
+        List[str]: Offending field names in ``PROVENANCE_FIELDS`` order. Empty when the
+        two runs are known to have come from the same system.
+    """
+    mismatched: List[str] = []
+    for field in PROVENANCE_FIELDS:
+        if field == 'dirty':
+            if left.get('dirty') is True or right.get('dirty') is True:
+                mismatched.append(field)
+            continue
+        left_value, right_value = left.get(field), right.get(field)
+        if left_value is None or right_value is None or left_value != right_value:
+            mismatched.append(field)
+    return mismatched
 
 
 def pipeline_label(crag_enabled: bool) -> str:
