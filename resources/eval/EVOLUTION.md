@@ -317,8 +317,13 @@ So the variance is recorded as a property of the system and not treated as a def
 ## Confidence is not quality
 
 The confidence note is a faithful reading of the pipeline's internal state. It is not a
-statement about whether the answer is right, and **two of Run E's six answers carry a
+statement about whether the answer is right, and **one of Run E's six answers carries a
 note that actively misleads.**
+
+> **Reviewed by the course instructor on 2026-09-18.** Question 4 is confirmed wrong:
+> the rejection factor is differential gain divided by common-mode gain. Question 6's
+> sign convention is confirmed **correct** for this course — an earlier draft of this
+> document listed it as probably wrong, which it is not.
 
 Question 4, labelled `alta`, verified `fundamentada` on the first attempt, from the
 correct document:
@@ -329,15 +334,45 @@ correct document:
 > (r F), **a mayor resistencia menor ganancia a modo común y, en consecuencia, mayor
 > factor de rechazo.**
 
-CMRR is Ad/Ac. The opening sentence states the ratio **inverted**. And the answer refutes
-itself two paragraphs later: a lower common-mode gain can only *raise* the rejection
-factor if the ratio is Ad/Ac. No course material is needed to establish that one of the
-two sentences is wrong — the answer contains its own counterexample.
+CMRR is Ad/Ac. The opening sentence states the ratio **inverted**. The answer also
+refutes itself two paragraphs later: a lower common-mode gain can only *raise* the
+rejection factor if the ratio is Ad/Ac. No course material is needed to establish that
+one of the two sentences is wrong — the answer contains its own counterexample.
 
-Question 6, also `alta`, defines the differential input as *"la diferencia entre la señal
-aplicada a la entrada inversora y la señal aplicada a la entrada no inversora"* — v(−) −
-v(+), the inverse of the usual convention. That one needs the course's own convention
-confirmed before it can be called an error.
+**The corpus is not the source of the error.** It states the relationship correctly,
+three separate times, in the same document the answer was built from:
+
+> el factor de rechazo que es la relación entre la ganancia a modo **diferencial** y la
+> ganancia a modo **común**
+
+> factor de rechazo compuesto determinado por la relación entre la ganancia a modo
+> **diferencial** compuesto y la ganancia a modo **común**
+
+> El factor de rechazo con salida simple (Frs) es la relación entre la ganancia
+> **diferencial** con salida simple y la ganancia a modo **común**
+
+So this is a generation defect, and a specific one. Put the two side by side:
+
+| | |
+|---|---|
+| Corpus | *"la relación entre la ganancia a modo **diferencial** compuesto **y** la ganancia a modo **común**"* |
+| Answer | *"la relación entre la ganancia a modo **común y** la ganancia a modo **diferencial** compuesto"* |
+
+**The same sentence with its two operands transposed.** And the answer's closing
+paragraph is copied from the corpus verbatim, which is why that half is right and why it
+contradicts the opening. The generator copied one sentence faithfully and inverted the
+other.
+
+That is also precisely why grounding verification passed it: both terms *are* in the
+chunk, and traceability cannot see a transposition. A check on provenance is structurally
+blind to the order of the things whose provenance it confirms.
+
+Question 6 defines the differential input as *"la diferencia entre la señal aplicada a la
+entrada inversora y la señal aplicada a la entrada no inversora"* — v(−) − v(+), which is
+the inverse of the convention used in most textbooks. **The instructor confirms this is
+the course's own convention**, so the answer is correct and this document previously
+over-flagged it. Worth keeping as a reminder: a deviation from the textbook default is
+not evidence of an error, and only the course can settle which convention applies.
 
 Every mechanism behaved **correctly** on question 4:
 
@@ -387,10 +422,10 @@ Read this as the specification for the next phase of work, not as hedging.
 
 | Gap | Why it is not closed | Who unblocks it |
 |-----|---------------------|-----------------|
-| **No question dataset** | `dataset.jsonl` is intentionally absent. Synthetic course questions would produce a number that reads like evidence while measuring nothing | Course instructors |
+| **No question dataset, and there will not be one** | The instructor cannot produce 40–60 validated pairs, so the evaluation is frozen at these 6 questions (decided 2026-09-18). Synthetic questions were never an option: they produce a number that reads like evidence while measuring nothing. What remains is one approved `expected_answer` per question — much smaller than the set it replaces, and the last gate on the harness | Course instructor |
 | **No quality scores** | Scoring against the course material is a human judgement; the harness never auto-scores, by design | Course instructors |
 | **No v1.0 comparison** | Mistral 7B / `k=2` / `RetrievalQA` was replaced in place, not kept configurable. Intact at `87ca5f3`, never run | A decision, then a 16 GB box |
-| **6 questions, 2 topics** | Ad hoc set, submitted by email during debugging. Says nothing about the other 13 documents | Follows from the dataset |
+| **6 questions, 2 topics** | Ad hoc set, submitted by email during debugging. Says nothing about the other 13 documents. **Now permanent**: this is the sample, so no result may ever be generalised to the course | Nothing — accepted |
 | **Correction-loop frequency** | Fired once, ever. One occurrence is not a rate | More questions |
 | **Generation vs verification cost** | No log line marks the generator returning ([#38](https://github.com/fedepacher/rag/issues/38)) | One `logging.info` |
 | **Grader preview size** | Raised 1500 → 3000 chars (9% → 80% of a mean chunk) for a quality reason, never tested for its effect on grading quality ([#34](https://github.com/fedepacher/rag/issues/34)) | A measurement |
@@ -405,11 +440,17 @@ The corpus hash in every results file is what makes a run identifiable despite t
 
 ## Next step
 
-The dataset is the bottleneck for everything in the table above, and it is the one item
-this project cannot unblock by itself. The work that does not wait on it is
-[#31](https://github.com/fedepacher/rag/issues/31): the confidence note currently tells a
-student that an inverted definition is reliable, and that is a defect the system can be
-measured against with the 6 questions already in hand.
+The 40–60-question dataset is off the table (decided 2026-09-18), so the bottleneck is
+now much narrower: **one approved reference answer per question, six in total.** With
+those, `run_baseline.py` runs, both arms become comparable under #32's provenance guard,
+and the four quality criteria can finally be scored.
+
+That scoring is worth insisting on, and the instructor review of 2026-09-18 is why. Asked
+whether the recorded answers were correct, the reading was *"parecían estar bien"* — and
+the same review confirmed the common-mode rejection answer is wrong. Both statements are
+honest, about the same answers. An inverted definition reads as ordinary prose. Neither a
+confidence level, nor a grounding verdict, nor a fluent read substitutes for a comparison
+against a reference answer.
 
 ---
 

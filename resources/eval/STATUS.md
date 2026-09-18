@@ -23,9 +23,10 @@ What exists now, and did not before:
 
 What still does not exist, and is what the rest of this document is about:
 
-- **`dataset.jsonl`** — the instructor-written question set. The 6 questions used so
-  far were submitted ad hoc by email during debugging and cover 2 topics out of 15
-  documents.
+- **`dataset.jsonl`** — not as a file, and **not as 40–60 questions either.** The
+  instructor cannot produce that set, so the evaluation is frozen at the 6 questions
+  already in use (§3). The questions exist verbatim; each still needs an approved
+  `expected_answer` before the harness will run.
 - **`resources/eval/results/`** — no run has gone through `run_baseline.py`; all five
   went through the production email/Mongo path.
 - **Any quality score.** Twelve answers have been read; none has been scored on the
@@ -33,13 +34,15 @@ What still does not exist, and is what the rest of this document is about:
 - **A comparison against v1.0** (Mistral 7B, `k=2`, `RetrievalQA`).
 
 So the distinction has moved rather than disappeared. It is no longer
-"architecture vs. nothing"; it is **"observed on 6 ad hoc questions vs. measured
-against a validated dataset."** The write-up may describe the mechanisms in the past
-tense now. It may not present a confidence-level count as a quality result, and it
-may not generalise from 6 questions to the course.
+"architecture vs. nothing"; it is **"exact on six questions vs. unknown on the
+course."** The write-up may describe the mechanisms in the past tense now, and may
+state per-question results as exact, because the pipeline is reproducible at a fixed
+commit. It may not present a confidence-level count as a quality result, and it may
+**never** generalise from 6 questions to the course — that limit is now permanent
+rather than pending.
 
-The remaining gates are the same two as before — hardware, and the course
-instructors — and this repository can provide neither.
+The remaining gates: hardware, and one approved reference answer per question. The
+second is much smaller than the dataset it replaces.
 
 ## Legend
 
@@ -106,15 +109,48 @@ machine, otherwise idle, with both models resident.
 | Cold-start cost of pulling weights | **Box** | Still estimated. Now ~8.5 GB across three models |
 | Index rebuild cost | **Observed** | ~14.5 min for 148 chunks with bge-m3 on CPU, paid on every corpus change — and on every image rebuild, because the index has no volume ([#33](https://github.com/fedepacher/rag/issues/33)) |
 
-## 3. Blocked on the course instructors
+## 3. The instructor review of 2026-09-18
 
-| Item | Status | Notes |
-|------|--------|-------|
-| `dataset.jsonl` — 40–60 validated course questions | **Instructors** | Format frozen in `README.md`. Generating these synthetically would make the whole evaluation meaningless, so the repo refuses to fake them |
-| Quality scores: `pertinencia`, `claridad`, `precision`, `lenguaje` | **Instructors** | Assigned by hand per record after a run. The harness never auto-scores |
-| Hallucination rate | **Instructors** | Never computed by any tool here. It is a human judgement against `expected_answer` and `source_doc` |
-| Whether the confidence note reads usefully to a student | **Instructors** | Never shown to a student |
-| Whether the out-of-scope and ungrounded refusals are acceptable pedagogically | **Instructors** | The system now sometimes declines to answer where v1.0 would have replied. Nobody has agreed that this is the right trade |
+Five of the six questions that had been waiting on the course staff were answered. What
+they settled, and what it cost:
+
+| Item | Outcome |
+|------|---------|
+| Is the common-mode rejection answer wrong? | **Yes.** The rejection factor is differential gain over common-mode gain. The pipeline stated it inverted |
+| Is question 6's sign convention wrong? | **No** — v(−) − v(+) is this course's convention. An earlier draft of `EVOLUTION.md` over-flagged it; corrected |
+| Are the refusals pedagogically acceptable? | **Yes.** *"Está bien: si no sabe, que no delibere, porque puede crear confusión."* Withholding is the intended trade |
+| Does the confidence note help a student? | **Yes** — it tells them whether to take an answer at face value or with caution, and the system is understood to be under test and improving |
+| `dataset.jsonl` — 40–60 validated questions | **Will not happen.** See below |
+| Quality scores on the four criteria | **Still open**, and the review is why it matters — see below |
+
+### The dataset is frozen at 6 questions, by decision rather than by blockage
+
+The instructor cannot produce 40–60 validated question/answer pairs, so the evaluation
+will use the 6 questions already in use. That is a **decision**, and it changes what this
+repository can claim permanently, not temporarily:
+
+- No result may be generalised to the course. Six questions across 2 topics out of 15
+  documents is the sample, for good.
+- Per-question results remain exact — the pipeline is reproducible at a fixed commit — so
+  "this system answers these six questions this way" is a sound statement. "This system
+  answers *N*% of course questions correctly" never will be.
+- `run_baseline.py` refuses to start without `dataset.jsonl`, so the 6 questions have to
+  be written into that file for any of the harness to run at all. The questions exist
+  verbatim; `expected_answer` for each still needs instructor approval, and that approval
+  is now the single remaining gate on the whole harness.
+
+### Why the quality scores still matter, demonstrated by this very review
+
+Asked whether the recorded answers were correct, the instructor's reading was *"lo que
+leí de las respuestas parecían estar bien"* — and in the same review confirmed that the
+common-mode rejection answer is wrong.
+
+**Both statements are honest and they are about the same set of answers.** An inverted
+definition reads as natural prose; it does not look like an error until someone checks
+the relationship. That is not a lapse by the reviewer — it is the reason a confidence
+level, a grounding verdict and a fluent reading all fail to substitute for scoring
+against a reference answer. It is the strongest argument in this repository for keeping
+the four criteria, and it was produced by accident.
 
 ## 4. Unmeasured, and blocked on a decision
 
