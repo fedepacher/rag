@@ -296,6 +296,52 @@ final graph state — no extra model call, nothing new measured:
 | `baja` | Grounded only on the second generation pass | The generator drifted from the sources once on this question |
 | `no_aplica` | `relevance == irrelevante` or `grounding == no_fundamentada` at the end | Out-of-scope / ungrounded fallback. **No note is appended** |
 
+> **The confidence level is not a quality signal, and no report may present it as one.**
+> It reports whether the pipeline's own control nodes agreed with each other. Issue #31
+> is the demonstration, twice over: Run D and Run E both answered *"¿Qué representa el
+> factor de rechazo de modo común?"* with the ratio stated **inverted** (CMRR is Ad/Ac),
+> and both answers were labelled `alta`. Every mechanism was correct to do so — the
+> right document was retrieved, and an inverted ratio traces back to the chunks
+> perfectly, so `fundamentada` was the right verdict and nothing had to be corrected.
+> Counting `alta` answers measures internal agreement. Two runs now show that agreement
+> at its maximum over a definition a student would learn backwards. See
+> `resources/eval/EVOLUTION.md` ("Confidence is not quality") and
+> `resources/eval/STATUS.md` §5, which forbids the claim explicitly.
+>
+> **Grounding verification checks provenance, and provenance is not truth.** This is a
+> structural limit, not a tuning problem: the same limit let PDF extraction debris ship
+> as `fundamentada`/`alta` before #30 filtered it out of the corpus. Nothing in the graph
+> reads the answer for coherence or for correctness, and Self-RAG was never specified to.
+
+- **Every note carries `CONFIDENCE_ADVICE`, including `alta`.** It used to be the only
+  level that advised nothing, and it is the label both known-wrong answers carried. That
+  had the logic backwards: the checks report on retrieval and on provenance, so reserving
+  the advice for levels where a check already complained withholds it from precisely the
+  failure no check can see. `alta` now also states the distinction to the student in one
+  sentence — *"Eso verifica su procedencia, no su exactitud"* — rather than leaving it in
+  this file. No note may imply the answer is correct; `tests/test_graph_routing.py`
+  pins that as an invariant rather than as prose review.
+- **No coherence-checking node was added, and that is a decision, not an omission** (#31,
+  second acceptance criterion). Three reasons, in order of weight:
+  1. **The judge would be the model that already failed the easier task.** The relevance
+     grader has returned `irrelevante` 0 times in 30 question-runs, twice on chunks the
+     generator had just declared insufficient. Asking that same 3.8B model to detect a
+     semantic inversion in a gain relationship asks more of a component that
+     demonstrably cannot do less.
+  2. **It would not catch the live case.** Run D's answer contained *both* directions of
+     the ratio explicitly, which a contradiction check might plausibly find. Run E's
+     states the inverted definition once, and the conflict only surfaces by inference
+     (FRc = Ac/Ad ⟹ lower Ac ⟹ lower FRc, while the text says higher). That is
+     multi-step domain reasoning, not contradiction detection.
+  3. **Every parser here degrades toward "let the answer through"**, deliberately. A
+     coherence check would have to degrade the same way or a confused control model
+     gains veto power over correct answers — so when it is unsure it changes nothing,
+     and unsure is its demonstrated default.
+
+  Latency is *not* among the reasons: response time is not a goal for this project.
+  Correctness stays a human judgement, which is what `resources/eval/README.md`'s
+  `expected_answer` and the four instructor criteria are for.
+
 - **Precedence is by severity, and `baja` outranks the retrieval signals.** A failed
   grounding check is the only signal about the *answer text*; the other two are about
   the *retrieval*.

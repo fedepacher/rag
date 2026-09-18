@@ -11,7 +11,10 @@ built with ``llm=None`` and a stub grader without reaching the network.
 import pytest
 
 from rag.llm_processor import (
+    CONFIDENCE_ADVICE,
     CONFIDENCE_HIGH,
+    CONFIDENCE_NOTES,
+    CONFIDENCE_NOTE_SEPARATOR,
     CONFIDENCE_LOW,
     CONFIDENCE_MEDIUM,
     CONFIDENCE_NOT_APPLICABLE,
@@ -356,3 +359,63 @@ def test_the_worst_case_walk_stays_inside_the_default_recursion_limit():
     assert super_steps < 25
     assert processor.llm.calls == (MAX_CRAG_ITERATIONS + 1) * MAX_GENERATION_ATTEMPTS == 6
     assert processor.grader_llm.calls == 8
+
+
+# --- CONFIDENCE_NOTES: what the student is actually told (#31) ---------------------
+#
+# Two runs answered "¿Qué representa el factor de rechazo de modo común?" with the
+# ratio inverted (CMRR is Ad/Ac) and both were labelled `alta`. Every mechanism was
+# correct to: the right document was retrieved and an inverted ratio traces back to
+# the chunks perfectly. Grounding verification checks provenance, and provenance is
+# not truth. These tests pin what the note may and may not claim as a result.
+
+
+class TestConfidenceNoteWording:
+    """The note is the only part of this analysis a student ever reads."""
+
+    @pytest.mark.parametrize("level", [CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW])
+    def test_every_note_advises_checking_against_the_course_material(self, level):
+        """`alta` used to be the only level that gave no such advice -- and it is the
+        label the two known-wrong answers carried. The failure mode is invisible to
+        every check in the graph, so the advice cannot be reserved for the levels where
+        a check already reported trouble."""
+        assert CONFIDENCE_ADVICE in CONFIDENCE_NOTES[level]
+
+    def test_the_advice_names_both_the_material_and_the_teacher(self):
+        assert "material de cátedra" in CONFIDENCE_ADVICE
+        assert "docente" in CONFIDENCE_ADVICE
+
+    @pytest.mark.parametrize("level", [CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW])
+    def test_every_note_names_its_own_level(self, level):
+        assert f"Nivel de confianza: {level}" in CONFIDENCE_NOTES[level]
+
+    def test_the_high_note_separates_provenance_from_accuracy(self):
+        """The distinction is the whole content of #31, so it is stated to the student
+        rather than only to whoever reads CLAUDE.md."""
+        note = CONFIDENCE_NOTES[CONFIDENCE_HIGH]
+        assert "procedencia" in note
+        assert "exactitud" in note
+
+    @pytest.mark.parametrize("level", [CONFIDENCE_HIGH, CONFIDENCE_MEDIUM, CONFIDENCE_LOW])
+    def test_no_note_claims_the_answer_is_correct(self, level):
+        """`pudo verificarse` reads to a student as "was checked and is right". Nothing
+        in the pipeline establishes that, so no note may imply it."""
+        note = CONFIDENCE_NOTES[level].lower()
+        for forbidden in ("es correcta", "es correcto", "es exacta", "garantiza que"):
+            assert forbidden not in note
+
+    def test_not_applicable_has_no_note_at_all(self):
+        """Both fallbacks must stay byte-for-byte equal to their constants, because
+        run_baseline.is_out_of_scope compares them verbatim."""
+        assert CONFIDENCE_NOT_APPLICABLE not in CONFIDENCE_NOTES
+
+    def test_the_fallback_answers_come_back_unchanged(self):
+        for fallback in (OUT_OF_SCOPE_ANSWER, UNGROUNDED_FALLBACK_ANSWER):
+            assert LLMProcessorOllama.annotate_with_confidence(
+                fallback, CONFIDENCE_NOT_APPLICABLE) == fallback
+
+    def test_an_answer_keeps_its_note_behind_the_separator(self):
+        annotated = LLMProcessorOllama.annotate_with_confidence(REAL_ANSWER, CONFIDENCE_HIGH)
+        body, _, note = annotated.partition(CONFIDENCE_NOTE_SEPARATOR)
+        assert body == REAL_ANSWER
+        assert note == CONFIDENCE_NOTES[CONFIDENCE_HIGH]

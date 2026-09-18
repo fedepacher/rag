@@ -49,6 +49,27 @@ and it must never be copied into `dataset.jsonl`.
 {"id": "example-000", "question": "PLACEHOLDER - not a real course question", "expected_answer": "PLACEHOLDER - not a real validated answer", "source_doc": "placeholder.pdf", "source_locator": "p. 0", "validated_by": "PLACEHOLDER", "validated_at": "1970-01-01", "topic": "placeholder", "difficulty": "basic", "notes": "Schema illustration only."}
 ```
 
+## Why this file cannot be replaced by the confidence level
+
+Every answer the CRAG pipeline produces carries a confidence note — `alta`, `media` or
+`baja`. It is tempting to treat a run's distribution of those as a quality result, and
+it is wrong. **The confidence level reports whether the pipeline's own control nodes
+agreed with each other.** It is derived from the graph state with no extra model call
+and no reading of the answer.
+
+The demonstration, recorded twice (issue #31): both Run D and Run E answered *"¿Qué
+representa el factor de rechazo de modo común?"* with the ratio **inverted** — CMRR is
+Ad/Ac — and both were labelled `alta`. Every mechanism was right to label them so. The
+correct document was retrieved, and an inverted ratio is perfectly traceable to chunks
+that discuss both gains, so `fundamentada` was the correct verdict and nothing needed
+correcting. Grounding verification checks *provenance*; provenance is not truth.
+
+So `expected_answer` below is not redundant with anything the pipeline produces, and the
+four criteria are not a formality awaiting automation. They are the only signal in this
+repository that is about the answer being *right*. `resources/eval/EVOLUTION.md`
+("Confidence is not quality") has the full answer text and the analysis;
+`resources/eval/STATUS.md` §5 lists it among the claims a write-up cannot make.
+
 ## Adding entries
 
 1. Instructors draft questions covering the course bibliography.

@@ -352,9 +352,27 @@ ratio traces back perfectly: the chunks discuss both gains and their relationshi
 the generator assembled them in the wrong order. This is the same structural limit the
 extraction debris hit from the other direction.
 
-The confidence note presents a provenance check to a student as a reliability signal.
-That gap is [issue #31](https://github.com/fedepacher/rag/issues/31), and it is the most
-important thing still open.
+The confidence note presented a provenance check to a student as a reliability signal.
+[Issue #31](https://github.com/fedepacher/rag/issues/31) addressed the part that can be
+addressed without a person reading the answer:
+
+- **Every level now advises checking against the course material**, `alta` included. It
+  had been the only level that advised nothing — and it is the label both wrong answers
+  carried. The checks report on retrieval and on provenance, so reserving the advice for
+  levels where a check already complained withheld it from exactly the failure no check
+  can see.
+- **`alta` now states the distinction to the student**: *"Eso verifica su procedencia, no
+  su exactitud: una afirmación puede provenir del material y aun así estar mal expresada
+  o invertida."*
+- **No coherence-checking node was added.** The judge would be the same 3.8B control
+  model that has returned `irrelevante` 0 times in 30 question-runs; it would not have
+  caught Run E's answer anyway, since the conflict there surfaces only by inference
+  rather than as an explicit contradiction; and it would have to degrade toward letting
+  answers through, like every other parser here, so an unsure judge changes nothing.
+
+**None of that makes the answer right.** The wrong answer still ships, now with a note
+that no longer implies it was checked for correctness. Whether the answer is correct
+remains a human judgement, and that is what the instructor criteria exist for.
 
 **Consequence for this document and any successor: no confidence-level distribution may
 be presented as a quality metric.** Counting `alta` answers measures the pipeline's

@@ -280,22 +280,35 @@ CONFIDENCE_NOTE_SEPARATOR = "\n\n---\n"
 # and UNGROUNDED_FALLBACK_ANSWER: it states what the system did, not how sure it "feels".
 # Each note says which signal produced the level, so a student who disagrees with it
 # knows what to check.
+# Carried by every level, including the highest. Issue #31: `alta` used to be the only
+# note that gave no advice to check anything -- and it is the label both known-wrong
+# answers carried. Reserving the advice for the levels where a check already reported
+# trouble gets the logic exactly backwards: the checks report on retrieval and on
+# provenance, and the failure that actually reached a student (a ratio stated inverted,
+# perfectly traceable to the chunks) is invisible to all of them. There is no level at
+# which this pipeline has established that an answer is right.
+CONFIDENCE_ADVICE = (
+    "Conviene contrastarla con el material de cátedra antes de darla por válida, o "
+    "consultar al docente."
+)
+
 CONFIDENCE_NOTES = {
     CONFIDENCE_HIGH: (
         "Nivel de confianza: alta. La bibliografía del curso cubre la consulta y todo lo "
-        "que afirma esta respuesta pudo verificarse contra el material recuperado."
+        "que afirma esta respuesta proviene del material recuperado. Eso verifica su "
+        "procedencia, no su exactitud: una afirmación puede provenir del material y aun "
+        f"así estar mal expresada o invertida. {CONFIDENCE_ADVICE}"
     ),
     CONFIDENCE_MEDIUM: (
-        "Nivel de confianza: media. Lo que afirma esta respuesta pudo verificarse contra "
-        "el material, pero la bibliografía cubre el tema solo parcialmente o hubo que "
-        "reformular la búsqueda para encontrarlo, así que la respuesta puede estar "
-        "incompleta. Conviene contrastarla con el material de cátedra."
+        "Nivel de confianza: media. Lo que afirma esta respuesta proviene del material, "
+        "pero la bibliografía cubre el tema solo parcialmente o hubo que reformular la "
+        "búsqueda para encontrarlo, así que la respuesta puede estar incompleta. "
+        f"{CONFIDENCE_ADVICE}"
     ),
     CONFIDENCE_LOW: (
-        "Nivel de confianza: baja. Un primer intento de respuesta no pudo verificarse "
-        "contra la bibliografía y hubo que reescribirlo con criterios más estrictos. "
-        "Conviene contrastar esta respuesta con el material de cátedra antes de darla "
-        "por válida, o consultarla con el docente."
+        "Nivel de confianza: baja. Un primer intento de respuesta no pudo rastrearse "
+        "hasta la bibliografía y hubo que reescribirlo con criterios más estrictos. "
+        f"{CONFIDENCE_ADVICE}"
     )
 }
 
