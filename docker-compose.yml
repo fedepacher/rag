@@ -24,6 +24,7 @@ services:
     environment:
       MONGO_INITDB_ROOT_USERNAME: mongoadmin
       MONGO_INITDB_ROOT_PASSWORD: secret
+      GLIBC_TUNABLES: "glibc.pthread.rseq=1"
     networks:
       rag_network:
         aliases:

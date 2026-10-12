@@ -4,6 +4,7 @@ FROM python:3.10-slim AS base
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     curl \
+    zstd \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
