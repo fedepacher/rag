@@ -13,7 +13,7 @@ echo "Ollama server is running."
 
 # Check if the Mistral model is already downloaded
 echo "Checking if the Mistral model is already downloaded..."
-if curl -s http://localhost:11434/api/models | grep -q '"name": "mistral"'; then
+if curl -s http://localhost:11434/api/tags | grep -q '"name": *"mistral'; then
   echo "Mistral model is already downloaded."
 else
   echo "Mistral model not found. Downloading..."

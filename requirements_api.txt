@@ -6,13 +6,13 @@ pytest
 uvicorn
 fastapi
 python-jose
-passlib
+passlib==1.7.4
 peewee
 websockets
 wsproto
 requests
 starlette
-bcrypt
+bcrypt==4.0.1
 pyjwt
 pymysql
 gunicorn
